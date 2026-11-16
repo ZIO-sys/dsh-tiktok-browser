@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# 运行时数据（默认在 ~/.dsh/tiktok-browser，放在仓库里时也忽略）
+browser-profile/
+downloads/
+state/
+library/
+control/
+config.json
+.tiktok-live/
+
+# 开发用探针脚本与截图
+dev/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

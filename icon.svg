@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="TikTok Browser">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#25F4EE"/>
+      <stop offset="0.55" stop-color="#FE2C55"/>
+      <stop offset="1" stop-color="#7B2CBF"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0B0B10"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="url(#g)" stroke-width="12"/>
+  <path d="M110 94 L172 128 L110 162 Z" fill="#FFFFFF"/>
+</svg>

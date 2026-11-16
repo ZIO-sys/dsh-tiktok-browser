@@ -1,0 +1,90 @@
+{
+  "name": "dsh-tiktok-browser-local",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "DSH 原生 TikTok 关键词素材采集工具（只读浏览 + 下载归档）",
+  "icon": "icon.svg",
+  "license": "MIT",
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "tiktok",
+    "browser-automation",
+    "ad-creative-collection"
+  ],
+  "engines": {
+    "node": ">=22.13",
+    "dsh": ">=0.2.0-rc.2 <0.2.1-0 || >=0.2.1-rc.2 <0.3.0-0"
+  },
+  "main": "dsh-plugin.mjs",
+  "exports": {
+    ".": "./dsh-plugin.mjs",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.bundle.yml",
+      "files": [
+        "package.json",
+        "cordis.bundle.yml",
+        "dsh-plugin.mjs",
+        "client.js",
+        "native-settings.mjs",
+        "native-settings-transport.mjs",
+        "core.mjs",
+        "tool-definitions.mjs",
+        "runtime-paths.mjs",
+        "playwright-runtime.mjs",
+        "browser-host.mjs",
+        "browser-launcher.mjs",
+        "browser-pages.mjs",
+        "proxy-check.mjs",
+        "diagnostics.mjs",
+        "services/settings-service.mjs",
+        "services/daily-budget.mjs",
+        "services/dedup.mjs",
+        "services/export.mjs",
+        "services/feedback.mjs",
+        "services/language-detect.mjs",
+        "services/profile-history.mjs",
+        "services/proxy-pool.mjs",
+        "services/retry.mjs",
+        "services/selling-points.mjs",
+        "services/model-gateway.mjs",
+        "services/token-budget.mjs",
+        "services/aix-adapter.mjs",
+        "services/downloader.mjs",
+        "services/keyword-expander.mjs",
+        "services/interest-profile.mjs",
+        "services/run-service.mjs",
+        "collect/store.mjs",
+        "collect/search.mjs",
+        "collect/extract.mjs",
+        "collect/pipeline.mjs",
+        "collect/archive.mjs",
+        "collect/cover.mjs",
+        "collect/frames.mjs",
+        "collect/judge-rule.mjs",
+        "collect/judge-model.mjs",
+        "collect/judge.mjs",
+        "collect/profiles.mjs",
+        "collect/library.mjs",
+        "collect/batch.mjs",
+        "collect/report.mjs",
+        "locale/zh.json",
+        "locale/en.json",
+        "icon.svg",
+        "LICENSE",
+        "README.md"
+      ]
+    }
+  }
+}
