@@ -29,7 +29,7 @@ export const TOOL_DEFINITIONS = [
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: '搜索关键词，例如 "desk setup" 或 "capcut template"。' },
-        limit: { type: 'integer', description: '本次最多处理多少条作品，默认取配置 search.maxResultsPerKeyword（40）。' },
+        limit: { type: 'integer', description: '本次最多处理多少条作品，默认取配置 search.maxResultsPerKeyword（25）。' },
         detail: { type: 'boolean', description: '是否逐条打开作品页提取完整字段，默认 true；false 时只记录搜索结果卡片。' },
         download: { type: 'boolean', description: '是否在提取成功后立刻下载视频并归档到 downloads/<关键词>/<日期>/，默认 false。' },
         preferNoWatermark: { type: 'boolean', description: '是否优先无水印地址（playAddr），默认 true（downloadAddr 带 TikTok 水印，只在 playAddr 失败时兜底）。' },

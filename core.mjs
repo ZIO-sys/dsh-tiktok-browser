@@ -40,10 +40,15 @@ import { createFeedbackStore, FEEDBACK_LIMITS } from './services/feedback.mjs';
 import { createProxyPool } from './services/proxy-pool.mjs';
 
 const PORT_RANGE = [9333, 9350];
+const DEFAULT_TASK_TOKEN_BUDGET = 50_000;
 const SEARCH_URL = 'https://www.tiktok.com/search?q=';
 // 素材库列表默认隐藏“首次采集超过 N 天”的旧记录：只影响列表展示，不删除文件与候选数据。
 // 时间基准是 collectedAt（首次入库时间），而不是 updatedAt（每次判定/下载都会刷新）。
 const LIBRARY_HIDE_AFTER_DAYS = 3;
+
+function configuredNumber(value, fallback) {
+  return value === '' || value === null || value === undefined ? fallback : Number(value);
+}
 
 function isPortFree(port) {
   return new Promise((resolve) => {
@@ -130,7 +135,7 @@ export class BrowserController {
   dailyBudgetStatus(now = new Date()) {
     const raw = this.#config?.search?.dailyTokenBudget;
     const dailyLimit = raw === undefined || raw === null || raw === '' ? DEFAULT_DAILY_TOKEN_BUDGET : Number(raw);
-    const task = Number(this.#config?.search?.tokenBudget);
+    const task = configuredNumber(this.#config?.search?.tokenBudget, DEFAULT_TASK_TOKEN_BUDGET);
     return computeDailyBudget({
       ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl'),
       dailyLimit,
@@ -147,7 +152,7 @@ export class BrowserController {
 
   #tokenBudget() {
     const daily = this.dailyBudgetStatus();
-    const task = Number(this.#config?.search?.tokenBudget);
+    const task = configuredNumber(this.#config?.search?.tokenBudget, DEFAULT_TASK_TOKEN_BUDGET);
     const taskLimit = Number.isSafeInteger(task) && task > 0 ? task : null;
     if (!daily.enabled && taskLimit == null) return null;
     // 每日上限更小时以每日为准；剩余为 0 时用 1 兜底，真正的拦截由调用前的 #dailyBudgetBlocked() 完成。
@@ -504,7 +509,7 @@ export class BrowserController {
     const proxy = await this.#proxyOption();
     if (!proxy.ok) return { ok: false, failure: proxy.failure };
 
-    const port = await pickPort(Number(this.#config.port));
+    const port = await pickPort(configuredNumber(this.#config.port, PORT_RANGE[0]));
     if (!port) {
       return { ok: false, failure: { code: 'PORT_UNAVAILABLE', message: '9333–9350 端口都被占用，无法启动调试端口。' } };
     }

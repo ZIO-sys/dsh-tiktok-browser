@@ -184,11 +184,29 @@ window.__ModuleLoader__.load({
       return { request, upload };
     }
 
+    // 新用户首次打开时，文本与数值输入框均不预填；留空提交时才回退到这些内部默认值。
+    const INPUT_DEFAULTS = Object.freeze({
+      materialThreshold: 60,
+      interestConfidence: 0,
+      maxResultsPerKeyword: 25,
+      targetCount: 10,
+      videoDistance: 6,
+      textSimilarity: 0.85,
+    });
+
+    function numberInputValue(value) {
+      return value === '' ? '' : Number(value);
+    }
+
+    function numberOrDefault(value, fallback) {
+      return value === '' || value === null || value === undefined ? fallback : Number(value);
+    }
+
     function normalize(config = {}) {
       return {
         downloadsDir: String(config.downloadsDir || ''),
         rejectedDir: String(config.storage?.rejectedDir || ''),
-        port: Number(config.port || 9333),
+        port: numberInputValue(config.port ?? ''),
         proxy: {
           server: String(config.proxy?.server || ''),
           username: String(config.proxy?.username || ''),
@@ -208,10 +226,10 @@ window.__ModuleLoader__.load({
           },
         },
         search: {
-          maxResultsPerKeyword: Number(config.search?.maxResultsPerKeyword || 25),
-          tokenBudget: Number(config.search?.tokenBudget || 50_000),
-          dailyTokenBudget: Number(config.search?.dailyTokenBudget ?? 200_000),
-          targetCount: Number(config.search?.targetCount || 10),
+          maxResultsPerKeyword: numberInputValue(config.search?.maxResultsPerKeyword ?? ''),
+          tokenBudget: numberInputValue(config.search?.tokenBudget ?? ''),
+          dailyTokenBudget: numberInputValue(config.search?.dailyTokenBudget ?? ''),
+          targetCount: numberInputValue(config.search?.targetCount ?? ''),
           queryLanguage: String(config.search?.queryLanguage || 'en'),
           contentLanguage: String(config.search?.contentLanguage || 'auto'),
           defaultProfileId: String(config.search?.defaultProfileId || ''),
@@ -226,8 +244,8 @@ window.__ModuleLoader__.load({
         },
         dedup: {
           enabled: config.dedup?.enabled === true,
-          videoDistance: Number(config.dedup?.videoDistance ?? 6),
-          textSimilarity: Number(config.dedup?.textSimilarity ?? 0.85),
+          videoDistance: numberInputValue(config.dedup?.videoDistance ?? ''),
+          textSimilarity: numberInputValue(config.dedup?.textSimilarity ?? ''),
         },
         download: {
           channel: String(config.download?.channel || 'page'),
@@ -305,11 +323,11 @@ window.__ModuleLoader__.load({
       const [uploadStatus, setUploadStatus] = useState(null);
       const [materialDraft, setMaterialDraft] = useState(null);
       const [interestDraft, setInterestDraft] = useState(null);
-      const [materialForm, setMaterialForm] = useState({ profileId: '', name: '', threshold: 60 });
-      const [interestForm, setInterestForm] = useState({ id: 'tiktok-interest', name: 'TikTok 观看兴趣' });
+      const [materialForm, setMaterialForm] = useState({ profileId: '', name: '', threshold: '' });
+      const [interestForm, setInterestForm] = useState({ id: '', name: '' });
       const [uploadProfileId, setUploadProfileId] = useState('');
       const [purgeConfirm, setPurgeConfirm] = useState(false);
-      const [seeds, setSeeds] = useState('match 3 game\npuzzle game');
+      const [seeds, setSeeds] = useState('');
       const [exclude, setExclude] = useState('');
       const [candidates, setCandidates] = useState(null);
       const [candidateFilter, setCandidateFilter] = useState({ status: 'all', query: '', sinceDays: 0, minScore: 0, videoId: '', page: 0, reload: 0 });
@@ -350,7 +368,7 @@ window.__ModuleLoader__.load({
           setReady(true);
           if (!initialized.current || resetDraft) {
             setDraft(normalize(value.settings?.config));
-            // 回填已保存的种子词/排除词；配置里还没有这两个键时保留首次默认值。
+            // 回填已保存的种子词/排除词；配置里还没有这两个键时保持首次空白。
             const savedSearch = value.settings?.config?.search || {};
             if (Array.isArray(savedSearch.seeds)) setSeeds(savedSearch.seeds.join('\n'));
             if (Array.isArray(savedSearch.exclude)) setExclude(savedSearch.exclude.join('\n'));
@@ -521,7 +539,7 @@ window.__ModuleLoader__.load({
         const patch = {
           downloadsDir: draft.downloadsDir,
           storage: { rejectedDir: draft.rejectedDir },
-          port: draft.port,
+          port: numberInputValue(draft.port),
           proxy: {
             server: draft.proxy.server,
             username: draft.proxy.username,
@@ -545,10 +563,10 @@ window.__ModuleLoader__.load({
       async function saveSearch() {
         const patch = {
           search: {
-            maxResultsPerKeyword: Number(draft.search.maxResultsPerKeyword),
-            tokenBudget: Number(draft.search.tokenBudget),
-            dailyTokenBudget: Number(draft.search.dailyTokenBudget),
-            targetCount: Number(draft.search.targetCount),
+            maxResultsPerKeyword: numberInputValue(draft.search.maxResultsPerKeyword),
+            tokenBudget: numberInputValue(draft.search.tokenBudget),
+            dailyTokenBudget: numberInputValue(draft.search.dailyTokenBudget),
+            targetCount: numberInputValue(draft.search.targetCount),
             queryLanguage: draft.search.queryLanguage,
             contentLanguage: draft.search.contentLanguage,
             defaultProfileId: draft.search.defaultProfileId,
@@ -559,8 +577,8 @@ window.__ModuleLoader__.load({
           judge: { threshold: Number(draft.judge.threshold), modelWeight: Number(draft.judge.modelWeight), prefilter: draft.judge.prefilter, coverPrefilter: Boolean(draft.judge.coverPrefilter), textPrefilter: Boolean(draft.judge.textPrefilter), sellingPoints: Boolean(draft.judge.sellingPoints) },
           dedup: {
             enabled: Boolean(draft.dedup.enabled),
-            videoDistance: Number(draft.dedup.videoDistance),
-            textSimilarity: Number(draft.dedup.textSimilarity),
+            videoDistance: numberInputValue(draft.dedup.videoDistance),
+            textSimilarity: numberInputValue(draft.dedup.textSimilarity),
           },
         };
         return (await perform('saveSearch', () => api.request('/config/configure', { patch }), '搜索设置已保存。')) !== null;
@@ -650,7 +668,7 @@ window.__ModuleLoader__.load({
       async function previewKeywords() {
         const value = await perform('preview', () => api.request('/keywords/expand', {
           seeds: seeds.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
-          targetCount: Number(draft.search.targetCount),
+          targetCount: numberOrDefault(draft.search.targetCount, INPUT_DEFAULTS.targetCount),
           queryLanguage: draft.search.queryLanguage,
           contentLanguage: draft.search.contentLanguage,
           exclude: exclude.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
@@ -662,12 +680,12 @@ window.__ModuleLoader__.load({
         if (!(await saveSearch())) return;
         await perform('startRun', () => api.request('/run/start', {
           seeds: seeds.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
-          targetCount: Number(draft.search.targetCount),
+          targetCount: numberOrDefault(draft.search.targetCount, INPUT_DEFAULTS.targetCount),
           queryLanguage: draft.search.queryLanguage,
           contentLanguage: draft.search.contentLanguage,
           exclude: exclude.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
           profileId: draft.search.defaultProfileId || null,
-          maxPerRun: Number(draft.search.maxResultsPerKeyword),
+          maxPerRun: numberOrDefault(draft.search.maxResultsPerKeyword, INPUT_DEFAULTS.maxResultsPerKeyword),
         }, { timeoutMs: 30_000 }), '采集任务已启动。');
       }
 
@@ -679,7 +697,7 @@ window.__ModuleLoader__.load({
         const value = await perform('buildMaterial', () => api.request('/profiles/material/build', {
           profileId: materialForm.profileId.trim(),
           name: materialForm.name,
-          threshold: Number(materialForm.threshold),
+          threshold: numberOrDefault(materialForm.threshold, INPUT_DEFAULTS.materialThreshold),
           calibrate: true,
           minSamples: 3,
           includeUnassigned: true,
@@ -697,7 +715,7 @@ window.__ModuleLoader__.load({
           id: materialDraft.id,
           patch: {
             name: materialDraft.name,
-            threshold: Number(materialDraft.threshold),
+            threshold: numberOrDefault(materialDraft.threshold, INPUT_DEFAULTS.materialThreshold),
             guidance: materialDraft.guidance,
             keywords: parseLines(materialDraft.keywords),
             mustHave: parseLines(materialDraft.mustHave),
@@ -732,7 +750,7 @@ window.__ModuleLoader__.load({
           patch: {
             name: interestDraft.name,
             summary: interestDraft.summary,
-            confidence: Number(interestDraft.confidence),
+            confidence: numberOrDefault(interestDraft.confidence, INPUT_DEFAULTS.interestConfidence),
             interests: parseLines(interestDraft.interests),
             creators: parseLines(interestDraft.creators),
             visualThemes: parseLines(interestDraft.visualThemes),
@@ -1132,7 +1150,7 @@ window.__ModuleLoader__.load({
             note(`正样例：${current?.sampleCount ?? 0} 条${current?.negativeCount ? ` · 反样例：${current.negativeCount} 条` : ''}`)),
           h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 120px', gap: 10 } },
             field('画像名称', materialDraft.name, (value) => setMaterialDraft((old) => ({ ...old, name: value }))),
-            field('阈值', materialDraft.threshold, (value) => setMaterialDraft((old) => ({ ...old, threshold: Number(value) })), { type: 'number', min: 0, max: 100 })),
+            field('阈值', materialDraft.threshold, (value) => setMaterialDraft((old) => ({ ...old, threshold: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
           area('画像描述（素材筛选标准）', materialDraft.guidance, (value) => setMaterialDraft((old) => ({ ...old, guidance: value })), 5, '描述这类素材要什么、不要什么，判定时会作为说明使用'),
           area('关键词，每行一个', materialDraft.keywords, (value) => setMaterialDraft((old) => ({ ...old, keywords: value })), 4),
           area('必须包含，每行一个', materialDraft.mustHave, (value) => setMaterialDraft((old) => ({ ...old, mustHave: value })), 3),
@@ -1160,7 +1178,7 @@ window.__ModuleLoader__.load({
           h('div', { style: row }, note(`画像 ID：${interestDraft.id}（只读）`)),
           h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 120px', gap: 10 } },
             field('画像名称', interestDraft.name, (value) => setInterestDraft((old) => ({ ...old, name: value }))),
-            field('置信度', interestDraft.confidence, (value) => setInterestDraft((old) => ({ ...old, confidence: Number(value) })), { type: 'number', min: 0, max: 100 })),
+            field('置信度', interestDraft.confidence, (value) => setInterestDraft((old) => ({ ...old, confidence: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
           area('画像描述（观看兴趣总结）', interestDraft.summary, (value) => setInterestDraft((old) => ({ ...old, summary: value })), 5, '总结这类观众喜欢什么、为什么会被吸引'),
           area('推荐搜索种子词，每行一个', interestDraft.positiveSeeds, (value) => setInterestDraft((old) => ({ ...old, positiveSeeds: value })), 4),
           area('应排除关键词，每行一个', interestDraft.negativeKeywords, (value) => setInterestDraft((old) => ({ ...old, negativeKeywords: value })), 2),
@@ -1358,10 +1376,10 @@ window.__ModuleLoader__.load({
               field('代理密码', draft.proxy.password, (value) => setDraft((old) => patchAt(old, ['proxy', 'password'], value)), { type: 'password', placeholder: '留空不修改' })),
             h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
               field('视频归档目录', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value))),
-              field('CDP 端口', draft.port, (value) => setDraft((old) => patchAt(old, ['port'], Number(value))), { type: 'number', min: 1024, max: 65535 })),
+              field('CDP 端口', draft.port, (value) => setDraft((old) => patchAt(old, ['port'], numberInputValue(value))), { type: 'number', min: 1024, max: 65535 })),
             field('被拒素材目录（留空 = 直接删除）', draft.rejectedDir, (value) => setDraft((old) => patchAt(old, ['rejectedDir'], value)), { placeholder: 'D:\\rejected' }),
             note('填了就按日期平铺存到 <目录>\\<YYYY-MM-DD>\\<videoId>.mp4 + .json，判定为 reject 时自动搬过去；留空则维持旧的直接删除行为。'),
-            note('归档目录保存后立即生效；CDP 端口在下次启动 Edge 时生效。'),
+            note('归档目录留空时使用默认 downloads 目录，保存后立即生效；CDP 端口留空时使用 9333，在下次启动 Edge 时生效。'),
             h('div', { style: row }, h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveBasic() }, busy === 'saveBasic' ? '保存中…' : '保存基础设置')))),
 
         category === '样例与画像' && h('div', { style: column },
@@ -1388,7 +1406,7 @@ window.__ModuleLoader__.load({
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 120px', gap: 10 } },
               field('画像 ID', materialForm.profileId, (value) => setMaterialForm((old) => ({ ...old, profileId: value })), { placeholder: '例如 puzzle-match3' }),
               field('画像名称', materialForm.name, (value) => setMaterialForm((old) => ({ ...old, name: value })), { placeholder: '例如 益智解谜 / match-3' }),
-              field('阈值', materialForm.threshold, (value) => setMaterialForm((old) => ({ ...old, threshold: Number(value) })), { type: 'number', min: 0, max: 100 })),
+              field('阈值', materialForm.threshold, (value) => setMaterialForm((old) => ({ ...old, threshold: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void buildMaterial() }, busy === 'buildMaterial' ? '生成中…' : '生成素材筛选画像')),
             note('至少 3 条正样例（反样例不计入）。当前 ID 正样例不足时，会自动把“未归属”样例归入该 ID；不会把其他画像的样例混进来。'),
@@ -1452,8 +1470,8 @@ window.__ModuleLoader__.load({
             h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 } },
               select('搜索指令语言', draft.search.queryLanguage, LANGUAGES, (value) => setDraft((old) => patchAt(old, ['search', 'queryLanguage'], value))),
               select('目标视频语言', draft.search.contentLanguage, LANGUAGES, (value) => setDraft((old) => patchAt(old, ['search', 'contentLanguage'], value))),
-              field('AI 扩展数量', draft.search.targetCount, (value) => setDraft((old) => patchAt(old, ['search', 'targetCount'], Number(value))), { type: 'number', min: 3, max: 30 }),
-              field('每词采集条数', draft.search.maxResultsPerKeyword, (value) => setDraft((old) => patchAt(old, ['search', 'maxResultsPerKeyword'], Number(value))), { type: 'number', min: 1, max: 200 })),
+              field('AI 扩展数量', draft.search.targetCount, (value) => setDraft((old) => patchAt(old, ['search', 'targetCount'], numberInputValue(value))), { type: 'number', min: 3, max: 30 }),
+              field('每词采集条数', draft.search.maxResultsPerKeyword, (value) => setDraft((old) => patchAt(old, ['search', 'maxResultsPerKeyword'], numberInputValue(value))), { type: 'number', min: 1, max: 200 })),
             select('判定画像', draft.search.defaultProfileId, [['', '使用默认画像'], ...profiles.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => patchAt(old, ['search', 'defaultProfileId'], value))),
             select('低成本预筛', draft.judge.prefilter, [['off', '关闭（每条都抽帧 + 调模型）'], ['rule', '规则预筛（低分/命中 mustNot 不抽帧、不调模型）']], (value) => setDraft((old) => patchAt(old, ['judge', 'prefilter'], value))),
             draft.judge.prefilter === 'rule'
@@ -1469,11 +1487,11 @@ window.__ModuleLoader__.load({
               : note('文本预筛关闭：判定直接进入视觉流程（开了封面粗筛就先抓封面）。开启后文字明显不符的素材可省掉一次视觉调用。'),
             toggle('素材去重（同素材换标题/重发不重复归档）', draft.dedup.enabled, (value) => setDraft((old) => patchAt(old, ['dedup', 'enabled'], value))),
             draft.dedup.enabled
-              ? note(`素材去重已开启：下载前先比文案（token 集 Jaccard ≥ 0.95 直接跳过），下载后再比 8 帧画面指纹（汉明 ≤ ${draft.dedup.videoDistance} 判重，文案 ≥ ${draft.dedup.textSimilarity} 且汉明 ≤ 12 也判重）；命中记为“重复”，不归档、不调模型。`)
+              ? note(`素材去重已开启：下载前先比文案（token 集 Jaccard ≥ 0.95 直接跳过），下载后再比 8 帧画面指纹（汉明 ≤ ${numberOrDefault(draft.dedup.videoDistance, INPUT_DEFAULTS.videoDistance)} 判重，文案 ≥ ${numberOrDefault(draft.dedup.textSimilarity, INPUT_DEFAULTS.textSimilarity)} 且汉明 ≤ 12 也判重）；命中记为“重复”，不归档、不调模型。`)
               : note('素材去重关闭：同一条素材换标题重发会被当成新素材重复归档、重复判定。开启后索引写在 state/dedup-index.jsonl。'),
             draft.dedup.enabled && h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 } },
-              field('画面判重汉明距离上限（0-64）', draft.dedup.videoDistance, (value) => setDraft((old) => patchAt(old, ['dedup', 'videoDistance'], Number(value))), { type: 'number', min: 0, max: 64 }),
-              field('文案判重相似度（0-1）', draft.dedup.textSimilarity, (value) => setDraft((old) => patchAt(old, ['dedup', 'textSimilarity'], Number(value))), { type: 'number', min: 0, max: 1 })),
+              field('画面判重汉明距离上限（0-64）', draft.dedup.videoDistance, (value) => setDraft((old) => patchAt(old, ['dedup', 'videoDistance'], numberInputValue(value))), { type: 'number', min: 0, max: 64 }),
+              field('文案判重相似度（0-1）', draft.dedup.textSimilarity, (value) => setDraft((old) => patchAt(old, ['dedup', 'textSimilarity'], numberInputValue(value))), { type: 'number', min: 0, max: 1 })),
             note(`已索引素材 ${state?.dedup?.indexed ?? 0} 条${state?.dedup?.enabled ? '' : '（去重关闭时不读索引）'}。`),
             toggle('画面文字 + 卖点（判定时顺带提取）', draft.judge.sellingPoints, (value) => setDraft((old) => patchAt(old, ['judge', 'sellingPoints'], value))),
             draft.judge.sellingPoints
@@ -1484,9 +1502,9 @@ window.__ModuleLoader__.load({
               : note('选定具体语言后，文案语言明显不符（置信度 ≥ 60%）的素材会标为“语言不符”，不下载、不判定；文案太短或判断不确定时照常放行。'),
             profiles.length === 0 && note('当前没有可用画像。请先在“样例与画像”生成素材筛选画像，否则采集会被拒绝。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 } },
-              field('本次任务 token 上限', draft.search.tokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'tokenBudget'], Number(value))), { type: 'number', min: 1 }),
-              field('每日 token 上限（0 = 不限）', draft.search.dailyTokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'dailyTokenBudget'], Number(value))), { type: 'number', min: 0 })),
-            note('本次上限覆盖种子扩展、语言相关模型请求与素材判定；每日上限跨任务累计，只算账本里已结算的 token，次日自动归零。'),
+              field('本次任务 token 上限', draft.search.tokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'tokenBudget'], numberInputValue(value))), { type: 'number', min: 1 }),
+              field('每日 token 上限（0 = 不限）', draft.search.dailyTokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'dailyTokenBudget'], numberInputValue(value))), { type: 'number', min: 0 })),
+            note('数值项留空时使用原默认值。本次上限覆盖种子扩展、语言相关模型请求与素材判定；每日上限跨任务累计，只算账本里已结算的 token，次日自动归零。'),
             dailyBudget && note(`今日 ${dailyBudget.dateKey || ''}：已用 ${dailyBudget.usedToday || 0}${dailyBudget.enabled ? ` / 上限 ${dailyBudget.dailyLimit || 0} / 剩余 ${dailyBudget.remaining || 0}` : ' · 每日上限未启用'}${dailyBudget.estimatedTokens ? `（其中估算 ${dailyBudget.estimatedTokens}）` : ''}`),
             dailyExhausted && h('p', { role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #c00)' } }, '今日 token 预算已用完：调大每日上限或等到明天，否则任务会被直接拒绝。'),
             h('div', { style: row },

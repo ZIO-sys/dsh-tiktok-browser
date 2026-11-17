@@ -31,6 +31,12 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 
 设置后端位于 `native-settings.mjs` / `native-settings-transport.mjs`，只接受本机同源请求、会话 token、字段白名单和脱敏 DTO；API Key 保存后不回显。
 
+### 首次配置与留空规则
+
+- 新用户首次打开设置页时，所有文本与数值输入框均为空；下拉选项和开关保留原有默认状态。已有用户保存过的配置仍正常回显。
+- 数值项留空时在运行层使用原默认值：CDP 端口 `9333`、AI 扩展数量 `10`、每词采集 `25` 条、本次任务 token 上限 `50000`、每日 token 上限 `200000`、画面判重距离 `6`、文案判重相似度 `0.85`、素材画像阈值 `60`。
+- 视频归档目录留空时使用运行目录下的 `downloads/`（默认 `~/.dsh/tiktok-browser/downloads/`）；被拒素材目录留空仍表示直接删除。
+
 ### AIX 无水印下载
 
 插件会自动检测专用 Edge profile 中的 AIX 智能下载器。当前 TikTok CDN 会拒绝 AIX 原生 `chrome.downloads` 请求；启用 `download.aix.allowAixUrlPageFetch` 后，会使用 AIX 捕获的无水印媒体地址，在 TikTok 页面上下文中抓取，并校验 MP4 文件头、最小体积和视频时长后再归档。默认下载通道仍为 `page`。
