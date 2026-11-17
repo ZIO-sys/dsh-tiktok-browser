@@ -1059,18 +1059,16 @@ window.__ModuleLoader__.load({
           value,
           min: options.min,
           max: options.max,
-          placeholder: options.placeholder,
           disabled: options.disabled,
           onChange: (event) => onChange(event.target.value),
           style: control,
         }));
       }
 
-      function area(label, value, onChange, rows = 4, placeholder = '') {
+      function area(label, value, onChange, rows = 4) {
         return h('label', { style: column }, label, h('textarea', {
           rows,
           value,
-          placeholder,
           onChange: (event) => onChange(event.target.value),
           style: { ...control, resize: 'vertical' },
         }));
@@ -1082,7 +1080,7 @@ window.__ModuleLoader__.load({
           disabled,
           onChange: (event) => onChange(event.target.value),
           style: control,
-        }, ...options.map(([key, text]) => h('option', { key, value: key }, text))));
+        }, ...options.map(([key, text]) => h('option', { key, value: key }, key === '' ? '' : text))));
       }
 
       function toggle(label, checked, onChange) {
@@ -1270,7 +1268,6 @@ window.__ModuleLoader__.load({
                   type: 'text',
                   defaultValue: (item.feedback?.tags || []).join(','),
                   disabled: busyAny,
-                  placeholder: '标签',
                   title: '逗号分隔，最多 8 个',
                   onBlur: (event) => {
                     const next = String(event.target.value || '').trim();
@@ -1342,28 +1339,27 @@ window.__ModuleLoader__.load({
         category === '基础设置' && h('div', { style: column },
           section('模型来源',
             select('模型配置方式', draft.model.source, [
-              ['legacy', '沿用 DSH 当前默认模型（兼容旧配置）'],
+              ['legacy', '兼容旧配置（配置文件 / 环境变量 / DSH 网关）'],
               ['openai-compatible', '自定义 OpenAI 兼容接口'],
               ['dsh', '选择 DSH 已配置的提供商与模型'],
             ], (value) => setDraft((old) => patchAt(old, ['model', 'source'], value))),
             draft.model.source === 'dsh' && h('div', { style: column },
-              select('DSH 提供商', draft.model.provider, [['', '请选择提供商'], ...configuredProviders.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => ({ ...old, model: { ...old.model, provider: value, model: '' } }))),
-              select('DSH 模型', draft.model.model, [['', '请选择模型'], ...configuredModels.map((item) => [item.id, `${item.name || item.id}${item.inputModalities?.includes('image') ? ' · 支持图像' : ''}`])], (value) => setDraft((old) => patchAt(old, ['model', 'model'], value))),
+              select('DSH 提供商', draft.model.provider, [['', ''], ...configuredProviders.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => ({ ...old, model: { ...old.model, provider: value, model: '' } }))),
+              select('DSH 模型', draft.model.model, [['', ''], ...configuredModels.map((item) => [item.id, `${item.name || item.id}${item.inputModalities?.includes('image') ? ' · 支持图像' : ''}`])], (value) => setDraft((old) => patchAt(old, ['model', 'model'], value))),
               (state?.model?.errors || []).length > 0 && note(state.model.errors.map((item) => `${item.provider || '模型'}: ${item.message}`).join('；'))),
             draft.model.source === 'openai-compatible' && h('div', { style: column },
-              field('Base URL', draft.model.api.baseUrl, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'baseUrl'], value)), { placeholder: 'https://api.example.com/v1' }),
-              field('API Key', draft.model.api.apiKey, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'apiKey'], value)), { type: 'password', placeholder: state?.settings?.credentials?.modelApiKey?.configured ? '已配置；留空不修改' : '输入 API Key' }),
-              field('默认模型名（可选兜底）', draft.model.api.model, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'model'], value)), { placeholder: '留空时按下面「视觉模型」调用' })),
+              field('Base URL', draft.model.api.baseUrl, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'baseUrl'], value))),
+              field('API Key', draft.model.api.apiKey, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'apiKey'], value)), { type: 'password' }),
+              field('通用模型名（可选）', draft.model.api.model, (value) => setDraft((old) => patchAt(old, ['model', 'api', 'model'], value)))),
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-              select('文本模型（可选）', draft.model.textModel, [['', '留空（文本预筛/卖点默认走主模型）'], ...modelSelectOptions(draft.model.textModel)], (value) => setDraft((old) => patchAt(old, ['model', 'textModel'], value))),
-              select('视觉模型（可选）', draft.model.visionModel, [['', '留空（默认 gpt-4o-mini）'], ...modelSelectOptions(draft.model.visionModel)], (value) => setDraft((old) => patchAt(old, ['model', 'visionModel'], value)))),
-            note('视觉模型负责抽帧打分，留空时默认 gpt-4o-mini；文本模型负责文本预筛与卖点提取。两者都沿用当前模型来源的凭据，无需重复填 Key。密钥保存后不回显；修改模型不会中断正在运行的任务。')),
+              select('文本模型（可选）', draft.model.textModel, [['', ''], ...modelSelectOptions(draft.model.textModel)], (value) => setDraft((old) => patchAt(old, ['model', 'textModel'], value))),
+              select('视觉模型（可选）', draft.model.visionModel, [['', ''], ...modelSelectOptions(draft.model.visionModel)], (value) => setDraft((old) => patchAt(old, ['model', 'visionModel'], value)))),
+            note('文本模型用于文本预筛和卖点提取，视觉模型用于抽帧判定。对应栏留空表示不单独覆盖模型；实际模型按当前模型来源、已有配置及兼容回退逻辑确定，可在“自检与用量”查看。密钥保存后不回显，空白保存不会覆盖已保存密钥；修改模型不会中断正在运行的任务。')),
           section('运行环境',
-            field('代理地址（单代理 / 池的兜底）', draft.proxy.server, (value) => setDraft((old) => patchAt(old, ['proxy', 'server'], value)), { placeholder: 'http://127.0.0.1:7890' }),
+            field('代理地址（单代理 / 池的兜底）', draft.proxy.server, (value) => setDraft((old) => patchAt(old, ['proxy', 'server'], value))),
             h('label', { style: column }, '代理池（每行一个，留空沿用单代理）', h('textarea', {
               rows: 3,
               value: draft.proxy.pool,
-              placeholder: 'http://127.0.0.1:7890\nhttp://127.0.0.1:7891',
               onChange: (event) => setDraft((old) => patchAt(old, ['proxy', 'pool'], event.target.value)),
               style: { ...control, resize: 'vertical' },
             })),
@@ -1373,11 +1369,12 @@ window.__ModuleLoader__.load({
             note('代理池只用来换出口；不代登录、不切 profile 内容。多账号请用不同的 browser.profileDir（配置文件里手填），登录仍需在 Edge 窗口里手动完成。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
               field('代理用户名', draft.proxy.username, (value) => setDraft((old) => patchAt(old, ['proxy', 'username'], value))),
-              field('代理密码', draft.proxy.password, (value) => setDraft((old) => patchAt(old, ['proxy', 'password'], value)), { type: 'password', placeholder: '留空不修改' })),
+              field('代理密码', draft.proxy.password, (value) => setDraft((old) => patchAt(old, ['proxy', 'password'], value)), { type: 'password' })),
+            note('代理密码保存后不回显，空白保存不会覆盖已保存密码。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
               field('视频归档目录', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value))),
               field('CDP 端口', draft.port, (value) => setDraft((old) => patchAt(old, ['port'], numberInputValue(value))), { type: 'number', min: 1024, max: 65535 })),
-            field('被拒素材目录（留空 = 直接删除）', draft.rejectedDir, (value) => setDraft((old) => patchAt(old, ['rejectedDir'], value)), { placeholder: 'D:\\rejected' }),
+            field('被拒素材目录（留空 = 直接删除）', draft.rejectedDir, (value) => setDraft((old) => patchAt(old, ['rejectedDir'], value))),
             note('填了就按日期平铺存到 <目录>\\<YYYY-MM-DD>\\<videoId>.mp4 + .json，判定为 reject 时自动搬过去；留空则维持旧的直接删除行为。'),
             note('归档目录留空时使用默认 downloads 目录，保存后立即生效；CDP 端口留空时使用 9333，在下次启动 Edge 时生效。'),
             h('div', { style: row }, h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveBasic() }, busy === 'saveBasic' ? '保存中…' : '保存基础设置')))),
@@ -1387,7 +1384,7 @@ window.__ModuleLoader__.load({
             note('支持 mp4/mov/webm/mkv，单个不超过 500MB；上传后自动抽帧并由视觉模型描述。正样例用于筛选画像，反样例可在同一素材库中单独标注。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
               select('样例归属画像', draft.search.defaultProfileId, [['', '未指定'], ...profiles.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => patchAt(old, ['search', 'defaultProfileId'], value))),
-              field('新画像 ID（可选）', uploadProfileId, setUploadProfileId, { placeholder: '例如 puzzle-match3' })),
+              field('新画像 ID（可选）', uploadProfileId, setUploadProfileId)),
             h('label', { style: column }, '选择视频文件', h('input', { type: 'file', accept: 'video/mp4,video/quicktime,video/webm,video/x-matroska', multiple: true, disabled: busyAny, onChange: (event) => void uploadSamples(Array.from(event.target.files || [])) })),
             toggle('作为反样例（“不想要的素材”，只用于生成 mustNot，不计入关键词统计）', uploadPolarity === 'negative', (checked) => setUploadPolarity(checked ? 'negative' : 'positive')),
             note('填写“新画像 ID”时，本次上传直接归入该画像；留空则用左侧选择。未归属样例可在生成素材筛选画像时自动归入。'),
@@ -1404,8 +1401,8 @@ window.__ModuleLoader__.load({
               }, sample.polarity === 'negative' ? '设为正样例' : '设为反样例')))),
           section('生成素材筛选画像',
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 120px', gap: 10 } },
-              field('画像 ID', materialForm.profileId, (value) => setMaterialForm((old) => ({ ...old, profileId: value })), { placeholder: '例如 puzzle-match3' }),
-              field('画像名称', materialForm.name, (value) => setMaterialForm((old) => ({ ...old, name: value })), { placeholder: '例如 益智解谜 / match-3' }),
+              field('画像 ID', materialForm.profileId, (value) => setMaterialForm((old) => ({ ...old, profileId: value }))),
+              field('画像名称', materialForm.name, (value) => setMaterialForm((old) => ({ ...old, name: value }))),
               field('阈值', materialForm.threshold, (value) => setMaterialForm((old) => ({ ...old, threshold: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void buildMaterial() }, busy === 'buildMaterial' ? '生成中…' : '生成素材筛选画像')),
@@ -1414,7 +1411,7 @@ window.__ModuleLoader__.load({
             materialEditor()),
           section('生成观看兴趣画像',
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-              field('画像 ID', interestForm.id, (value) => setInterestForm((old) => ({ ...old, id: value })), { placeholder: '例如 tiktok-interest' }),
+              field('画像 ID', interestForm.id, (value) => setInterestForm((old) => ({ ...old, id: value }))),
               field('画像名称', interestForm.name, (value) => setInterestForm((old) => ({ ...old, name: value })))),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void buildInterest() }, busy === 'buildInterest' ? '生成中…' : '生成观看兴趣画像')),
@@ -1465,7 +1462,7 @@ window.__ModuleLoader__.load({
               : '采集任务已启动，正在扩展关键词，进度稍后出现…')
             : note('开始采集会先自动保存当前搜索设置，再按下方种子词与画像启动；只改设置时用下方的「保存」。'),
           section('搜索任务',
-            area('目标种子词，每行一个', seeds, setSeeds, 4, '例如 match 3 game'),
+            area('目标种子词，每行一个', seeds, setSeeds, 4),
             area('排除词，每行一个（可选）', exclude, setExclude, 2),
             h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 } },
               select('搜索指令语言', draft.search.queryLanguage, LANGUAGES, (value) => setDraft((old) => patchAt(old, ['search', 'queryLanguage'], value))),
@@ -1521,7 +1518,7 @@ window.__ModuleLoader__.load({
 
         category === '下载与归档' && h('div', { style: column },
           section('归档目录',
-            field('视频归档目录（绝对路径）', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value)), { placeholder: '例如 D:\\TikTok素材' }),
+            field('视频归档目录（绝对路径）', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value))),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void pickArchiveDirectory() }, busy === 'pickDir' ? '等待选择…' : '选择文件夹'),
               h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveDownload() }, busy === 'saveDownload' ? '保存中…' : '保存归档目录')),
@@ -1553,7 +1550,7 @@ window.__ModuleLoader__.load({
           section('候选素材',
             h('div', { style: { display: 'grid', gridTemplateColumns: '150px 1fr 150px 130px', gap: 10 } },
               select('状态筛选', candidateFilter.status, [['all', '全部状态'], ...(candidates?.statuses || []).map((item) => [item, CANDIDATE_STATUS_LABELS[item] || item])], (value) => updateCandidateFilter({ status: value, page: 0 })),
-              field('关键词 / 作者', candidateFilter.query, (value) => updateCandidateFilter({ query: value, page: 0 }), { placeholder: '输入后点“刷新列表”' }),
+              field('关键词 / 作者', candidateFilter.query, (value) => updateCandidateFilter({ query: value, page: 0 })),
               select('时间范围', String(candidateFilter.sinceDays), [['0', '全部时间'], ['1', '最近 1 天'], ['3', '最近 3 天'], ['7', '最近 7 天'], ['30', '最近 30 天']], (value) => updateCandidateFilter({ sinceDays: Number(value), page: 0 })),
               select('人工评分', String(candidateFilter.minScore || 0), [['0', '不限分数'], ['1', '≥1 分'], ['2', '≥2 分'], ['3', '≥3 分'], ['4', '≥4 分'], ['5', '=5 分']], (value) => updateCandidateFilter({ minScore: Number(value), page: 0 }))),
             h('div', {
@@ -1573,7 +1570,6 @@ window.__ModuleLoader__.load({
                   h('input', {
                     type: 'text',
                     value: candidateFilter.videoId,
-                    placeholder: '例如 7661829902877936909',
                     style: { ...control, width: '100%', paddingRight: candidateFilter.videoId ? 30 : undefined },
                     onChange: (event) => {
                       setPageHint(null);
@@ -1612,7 +1608,6 @@ window.__ModuleLoader__.load({
                   type: 'number',
                   min: 1,
                   value: pageInput,
-                  placeholder: '页码',
                   style: { ...control, width: 76, padding: '5px 8px' },
                   onChange: (event) => setPageInput(event.target.value),
                   onKeyDown: (event) => {
@@ -1684,8 +1679,8 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !(retryState?.total > 0), onClick: () => void perform('retryClear', () => api.request('/retry/clear', {}), '重试队列已清空。') }, busy === 'retryClear' ? '清空中…' : '清空重试队列')),
             ...(retryState?.entries || []).slice(0, 5).map((item) => note(`${item.videoId} · 第 ${item.attempt} 次 · ${item.code || '-'} · 下次 ${item.nextRunAt ? new Date(item.nextRunAt).toLocaleString('zh-CN', { hour12: false }) : '-'}`))),
           section('运行环境',
-            note(`视觉打分：${state?.model?.active?.model || '未配置'}（${state?.model?.active?.modelSource === 'dsh' ? 'DSH 模型' : '本机 8000 网关'}）`),
-            note(`文本模型：${state?.settings?.config?.model?.textModel || '沿用视觉模型'} · ${state?.model?.active?.textPrefilter || state?.model?.active?.sellingPoints ? '已启用（文本预筛/卖点提取）' : '未启用（文本预筛与卖点提取都关着，不会调用）'}`),
+            note(`视觉打分：${state?.model?.active?.model || '未配置'}（${state?.model?.active?.modelSource === 'dsh' ? 'DSH 模型' : state?.model?.active?.modelSource === 'openai-compatible' ? 'OpenAI 兼容接口' : '来源未知'}）`),
+            note(`文本模型：${state?.settings?.config?.model?.textModel || '未单独指定'} · ${state?.model?.active?.textPrefilter || state?.model?.active?.sellingPoints ? '已启用（文本预筛/卖点提取）' : '未启用（文本预筛与卖点提取都关着，不会调用）'}`),
             note(`下载通道：${state?.download?.channel || '-'} · AIX ${aix?.ok ? `${aix.version}` : '不可用'}`),
             note(`样例库：${state?.library?.count || 0} 条样例 · 兴趣画像 ${interestProfiles.length} 张`)))
       );

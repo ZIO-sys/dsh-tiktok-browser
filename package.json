@@ -1,6 +1,6 @@
 {
   "name": "dsh-tiktok-browser-local",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "DSH 原生 TikTok 关键词素材采集工具（只读浏览 + 下载归档）",
   "author": "ZIO-sys",

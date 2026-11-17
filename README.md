@@ -57,9 +57,11 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 
 ### 首次配置与留空规则
 
-- 新用户首次打开设置页时，所有文本与数值输入框均为空；下拉选项和开关保留原有默认状态。已有用户保存过的配置仍正常回显。
+- 新用户首次打开设置页时，所有文本与数值输入框均为空，且不显示浅灰占位提示；文本/视觉模型等空值选项也显示为空白。已有用户保存过的配置仍正常回显。
+- 文本/视觉专用模型留空表示不单独覆盖模型；实际模型按当前模型来源、已有配置及兼容回退逻辑确定，可在「自检与用量」查看，不再在空选项中承诺固定模型名。
 - 数值项留空时在运行层使用原默认值：CDP 端口 `9333`、AI 扩展数量 `10`、每词采集 `25` 条、本次任务 token 上限 `50000`、每日 token 上限 `200000`、画面判重距离 `6`、文案判重相似度 `0.85`、素材画像阈值 `60`。
 - 视频归档目录留空时使用运行目录下的 `downloads/`（默认 `~/.dsh/tiktok-browser/downloads/`）；被拒素材目录留空仍表示直接删除。
+- API Key 与代理密码保存后不回显，对应输入框空白保存不会覆盖已保存的秘密值。
 
 ### AIX 无水印下载
 
@@ -75,7 +77,7 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 | 浏览器 | 使用本机 Microsoft Edge（`channel: msedge`），以 CDP 方式启动，登录态持久化在 `browser-profile/`。 |
 | 登录 | 首次需在 Edge 窗口里手动登录一次 TikTok；之后 `sessionid` 等 cookie 跨进程持久化，无需重复登录。 |
 | ffmpeg | 抽帧用。优先 `TIKTOK_FFMPEG`，否则自动扫描 `%APPDATA%\Python\Python3*\site-packages\imageio_ffmpeg\binaries\ffmpeg*.exe`。 |
-| 视觉模型 | 任意 OpenAI 兼容的多模态接口（本地部署或云端均可）。在设置页「模型来源」里选「自定义 OpenAI 兼容接口」并填 Base URL / API Key / 模型名；也可用环境变量 `TIKTOK_JUDGE_API_KEY` / `TIKTOK_JUDGE_BASE_URL` / `TIKTOK_JUDGE_MODEL`。都不填时回退到 DSH 当前的默认模型。 |
+| 视觉模型 | 任意 OpenAI 兼容的多模态接口（本地部署或云端均可）。在设置页「模型来源」里选「自定义 OpenAI 兼容接口」并填 Base URL / API Key / 模型名；也可用环境变量 `TIKTOK_JUDGE_API_KEY` / `TIKTOK_JUDGE_BASE_URL` / `TIKTOK_JUDGE_MODEL`。专用模型名留空表示不单独覆盖，实际路由按当前模型来源、已有配置及兼容回退顺序确定，可在「自检与用量」查看。 |
 
 ## 工具清单（14）
 
