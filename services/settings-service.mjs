@@ -6,8 +6,9 @@ import { isAllowedModelBaseUrl } from './model-gateway.mjs';
 export const CONFIG_VERSION = 2;
 
 const FIELDS = Object.freeze({
-  downloadsDir: { kind: 'directory' },
-  port: { kind: 'integer', min: 1024, max: 65535 },
+  // 留空时使用运行目录下的默认 downloads/，方便新用户按需填写。
+  downloadsDir: { kind: 'directory', allowEmpty: true },
+  port: { kind: 'integer', min: 1024, max: 65535, allowEmpty: true },
   'proxy.server': { kind: 'string' },
   // P2-5 代理池：留空沿用单代理；最多 20 个。
   'proxy.pool': { kind: 'stringArray' },
@@ -18,10 +19,10 @@ const FIELDS = Object.freeze({
   'storage.rejectedDir': { kind: 'directory', allowEmpty: true },
   'proxy.username': { kind: 'string' },
   'proxy.password': { kind: 'string' },
-  'search.maxResultsPerKeyword': { kind: 'integer', min: 1, max: 200 },
-  'search.tokenBudget': { kind: 'integer', min: 1, max: 1_000_000_000 },
-  'search.dailyTokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000 },
-  'search.targetCount': { kind: 'integer', min: 3, max: 30 },
+  'search.maxResultsPerKeyword': { kind: 'integer', min: 1, max: 200, allowEmpty: true },
+  'search.tokenBudget': { kind: 'integer', min: 1, max: 1_000_000_000, allowEmpty: true },
+  'search.dailyTokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000, allowEmpty: true },
+  'search.targetCount': { kind: 'integer', min: 3, max: 30, allowEmpty: true },
   'search.queryLanguage': { kind: 'string' },
   'search.contentLanguage': { kind: 'string' },
   'search.expansionEnabled': { kind: 'boolean' },
@@ -43,8 +44,8 @@ const FIELDS = Object.freeze({
   'judge.sellingPoints': { kind: 'boolean' },
   // P2-1 素材去重：默认 off，阈值可调。
   'dedup.enabled': { kind: 'boolean' },
-  'dedup.videoDistance': { kind: 'integer', min: 0, max: 64 },
-  'dedup.textSimilarity': { kind: 'number', min: 0, max: 1 },
+  'dedup.videoDistance': { kind: 'integer', min: 0, max: 64, allowEmpty: true },
+  'dedup.textSimilarity': { kind: 'number', min: 0, max: 1, allowEmpty: true },
   'judge.useModel': { kind: 'boolean' },
   'judge.frameCount': { kind: 'integer', min: 1, max: 10 },
   'judge.api.baseUrl': { kind: 'baseUrl' },
@@ -106,6 +107,8 @@ function hasPrefix(prefix, path) {
 
 function validateField(path, value, rule) {
   if (value === undefined || value === null) return;
+  // allowEmpty 的字段把空串原样保存，运行层再应用内部默认值，设置页因此能保持空白。
+  if (rule.allowEmpty && typeof value === 'string' && !value.trim()) return;
   if (rule.kind === 'string') {
     if (typeof value !== 'string') throw settingsError('CONFIG_INVALID_TYPE', `${path} 必须是字符串。`);
     if (rule.nonEmpty && !value.trim()) throw settingsError('CONFIG_INVALID_VALUE', `${path} 不能为空。`);

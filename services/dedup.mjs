@@ -261,7 +261,10 @@ export function resolveDedupOptions(config = {}) {
   const raw = config?.dedup && typeof config.dedup === 'object' ? config.dedup : {};
   const flag = raw.enabled;
   const enabled = flag === true || ['on', 'true', '1'].includes(String(flag ?? '').toLowerCase());
-  const number = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+  const number = (value, fallback) => {
+    if (value === '' || value === null || value === undefined) return fallback;
+    return Number.isFinite(Number(value)) ? Number(value) : fallback;
+  };
   return {
     enabled,
     videoDistance: number(raw.videoDistance, DEDUP_DEFAULTS.videoDistance),
