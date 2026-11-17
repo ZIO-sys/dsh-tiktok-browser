@@ -234,7 +234,7 @@ export async function runSearch({
   logger,
 }) {
   const startedAt = Date.now();
-  const maxResults = Math.max(1, Math.min(Number(limit) || Number(config?.search?.maxResultsPerKeyword) || 20, 200));
+  const maxResults = Math.max(1, Math.min(Number(limit) || Number(config?.search?.maxResultsPerKeyword) || 25, 200));
   const minDelay = Number(config?.collect?.minDelayMs) || 800;
   const maxDelay = Number(config?.collect?.maxDelayMs) || 1500;
   const batchEvery = Number(config?.collect?.batchPauseEvery) || 20;
