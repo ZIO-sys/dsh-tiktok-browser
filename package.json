@@ -1,8 +1,17 @@
 {
   "name": "dsh-tiktok-browser-local",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "DSH 原生 TikTok 关键词素材采集工具（只读浏览 + 下载归档）",
+  "author": "ZIO-sys",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZIO-sys/dsh-tiktok-browser.git"
+  },
+  "homepage": "https://github.com/ZIO-sys/dsh-tiktok-browser#readme",
+  "bugs": {
+    "url": "https://github.com/ZIO-sys/dsh-tiktok-browser/issues"
+  },
   "icon": "icon.svg",
   "license": "MIT",
   "keywords": [

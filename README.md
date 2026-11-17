@@ -6,7 +6,31 @@
 
 插件目录即 `tiktok-browser/`，通过 DSH 本地插件机制加载（`package.json` + `cordis.bundle.yml` + `dsh-plugin.mjs`）。启用后对话里出现 14 个 `tiktok_*` 工具，并在 DSH 设置侧栏增加“刷 TikTok”。
 
-### 从 GitHub 安装
+### 从 GitHub 源安装（推荐，支持一键更新）
+
+Windows 桌面版使用 `desktop` profile：
+
+```powershell
+dsh plugin --profile desktop add github:ZIO-sys/dsh-tiktok-browser
+```
+
+通过 `dsh web` 运行的用户使用 `web` profile：
+
+```sh
+dsh plugin --profile web add github:ZIO-sys/dsh-tiktok-browser
+```
+
+安装后重启 DSH，确认插件状态为已应用（applied），侧栏出现「刷 TikTok」。本插件是 Host-only bundle，没有构建步骤，也不需要 `npm install`。
+
+已经按旧版说明用本地目录安装的用户，需要在对应 profile 重新执行一次上述 GitHub 安装命令，把安装来源从 `link:` 切换为 `github:`，然后重启 DSH。只做这一次迁移，之后即可在「插件市场 → 已安装」检查并点击更新。
+
+### 后续版本更新
+
+每次发布新版本时，必须提升 `package.json` 的 `version` 并推送到默认分支 `main`。DSH 市场发现远端 SemVer 高于已安装版本后，会在插件卡片上显示“更新 vX.Y.Z”；用户点击更新并按提示重启即可。只提交代码而不提升版本号，不会作为稳定的新版本提示。GitHub Release / tag 可用来记录发布，但更新检查以默认分支中的 `package.json` 版本为准。
+
+### 本地开发安装（不参与在线更新）
+
+需要修改源码并即时调试时，仍可克隆仓库后通过本地目录安装：
 
 ```powershell
 git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
@@ -17,7 +41,7 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 - **图形界面**：设置 → 插件（Plugins）→ 添加插件 → 选择刚克隆下来的 `dsh-tiktok-browser` 目录；
 - **对话工具**：`plugin_manager` 的 `action: "install_bundle"`，`target` 填该目录的绝对路径。
 
-装好后确认插件状态为已应用（applied），侧栏出现「刷 TikTok」即可。本插件是 Host-only bundle，没有构建步骤，也不需要 `npm install`；安装时 DSH 是把这个目录作为本地插件链接进来，不会复制文件，所以**不要删除克隆下来的目录**，否则插件会失效。升级就是 `git pull` 后重启 DSH。
+这种方式会在插件卡片上显示“本地开发”，DSH 市场不会为它提供在线更新。插件目录是链接而不是复制，调试期间不要删除；需要恢复一键更新时，重新按上面的 GitHub 源安装即可。
 
 ## 图形设置页
 
