@@ -58,10 +58,11 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 ### 首次配置与留空规则
 
 - 新用户首次打开设置页时，所有文本与数值输入框均为空，且不显示浅灰占位提示；文本/视觉模型等空值选项也显示为空白。已有用户保存过的配置仍正常回显。
-- 文本/视觉专用模型留空表示不单独覆盖模型；实际模型按当前模型来源、已有配置及兼容回退逻辑确定，可在「自检与用量」查看，不再在空选项中承诺固定模型名。
+- 「默认模型」沿用宿主“新开对话默认选择的模型”，每次判定时实时读取；文本/视觉专用模型留空表示不单独覆盖。默认模型或 DSH 来源下可选择 `提供商/模型名` 跨提供商路由，自定义 OpenAI 兼容接口会原样发送模型 ID（包括名称中的 `/`）。实际路由可在「自检与用量」查看。
 - 数值项留空时在运行层使用原默认值：CDP 端口 `9333`、AI 扩展数量 `10`、每词采集 `25` 条、本次任务 token 上限 `50000`、每日 token 上限 `200000`、画面判重距离 `6`、文案判重相似度 `0.85`、素材画像阈值 `60`。
 - 视频归档目录留空时使用运行目录下的 `downloads/`（默认 `~/.dsh/tiktok-browser/downloads/`）；被拒素材目录留空仍表示直接删除。
-- API Key 与代理密码保存后不回显，对应输入框空白保存不会覆盖已保存的秘密值。
+- API Key 保存后不回显，空白保存不会覆盖已保存的秘密值。旧版本遗留的代理用户名/密码不再使用或回显，并会在下次保存设置时清理。
+- 代理模式支持「自动」「跟随系统代理」「手动」。自动模式在已有代理地址、代理池或 `TIKTOK_PROXY_SERVER` 时使用手动代理，否则跟随系统；系统代理模式支持 Windows 固定代理与 PAC 脚本，浏览器直接继承系统设置。
 
 ### AIX 无水印下载
 
@@ -73,7 +74,7 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 
 | 项 | 说明 |
 | --- | --- |
-| 代理 | 需要能访问 TikTok 的 HTTP 代理。用环境变量 `TIKTOK_PROXY_SERVER` 指定，或在设置页 / `config.json` 的 `proxy.server` 里填（示例 `http://127.0.0.1:7890`，端口按你自己的代理软件填）。TikTok 直连不可用。 |
+| 代理 | 需要能访问 TikTok。Windows 可选择「跟随系统代理」，或在手动模式通过 `TIKTOK_PROXY_SERVER` / 设置页 / `config.json` 的 `proxy.server` 填写免认证 HTTP(S) 代理（示例 `http://127.0.0.1:7890`）。SOCKS 与需账号密码认证的代理不支持。 |
 | 浏览器 | 使用本机 Microsoft Edge（`channel: msedge`），以 CDP 方式启动，登录态持久化在 `browser-profile/`。 |
 | 登录 | 首次需在 Edge 窗口里手动登录一次 TikTok；之后 `sessionid` 等 cookie 跨进程持久化，无需重复登录。 |
 | ffmpeg | 抽帧用。优先 `TIKTOK_FFMPEG`，否则自动扫描 `%APPDATA%\Python\Python3*\site-packages\imageio_ffmpeg\binaries\ffmpeg*.exe`。 |

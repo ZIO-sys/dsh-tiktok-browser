@@ -17,24 +17,20 @@ const DEFAULT_TIMEOUT = 25_000;
 const RETRY_DELAY_MS = 1_500;
 
 /**
- * 解析代理配置：配置文件 {proxy:{server,username,password,allowDirect}} + 环境变量覆盖。
- * 只支持 http/https 代理；socks5 明确报不支持，避免静默失败。
+ * 解析代理配置：配置文件 {proxy:{mode,server,allowDirect}} + 环境变量覆盖。
+ * 只支持免认证的 http/https 代理；socks5 明确报不支持，避免静默失败。
  */
 export function resolveProxyConfig(config = {}, env = process.env) {
   const fromConfig = config?.proxy && typeof config.proxy === 'object' ? config.proxy : {};
   const server = String(env.TIKTOK_PROXY_SERVER || fromConfig.server || '').trim();
-  const username = String(env.TIKTOK_PROXY_USERNAME || fromConfig.username || '').trim();
-  const password = String(env.TIKTOK_PROXY_PASSWORD || fromConfig.password || '');
   const allowDirect = fromConfig.allowDirect === true;
   if (!server) {
-    return { configured: false, server: null, username: '', password: '', allowDirect, protocol: null, host: null, port: null };
+    return { configured: false, server: null, allowDirect, protocol: null, host: null, port: null };
   }
   const parsed = parseServer(server);
   return {
     configured: true,
     server,
-    username,
-    password,
     allowDirect,
     protocol: parsed.protocol,
     host: parsed.host,
@@ -111,7 +107,7 @@ export async function checkProxy({ proxy, target = DEFAULT_TARGET, timeoutMs = D
       return {
         ok: false,
         code: PROXY_ERROR_CODES.AUTH_FAILED,
-        message: '代理返回 407，用户名或密码不正确。',
+        message: '代理要求认证，本插件只支持免认证代理。',
         server: resolved.server,
         latencyMs,
         target,
@@ -159,12 +155,7 @@ function mapProxyError(error) {
  */
 function probeThroughProxy(proxy, target, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const auth =
-      proxy.username || proxy.password
-        ? `Basic ${Buffer.from(`${proxy.username}:${proxy.password}`).toString('base64')}`
-        : null;
     const headers = { Host: `${target}:443` };
-    if (auth) headers['Proxy-Authorization'] = auth;
     const request = http.request({
       host: proxy.host,
       port: proxy.port,

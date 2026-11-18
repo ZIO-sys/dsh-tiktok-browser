@@ -1,6 +1,6 @@
 {
   "name": "dsh-tiktok-browser-local",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "description": "DSH 原生 TikTok 关键词素材采集工具（只读浏览 + 下载归档）",
   "author": "ZIO-sys",
@@ -26,6 +26,9 @@
     "dsh": ">=0.2.0-rc.2 <0.2.1-0 || >=0.2.1-rc.2 <0.3.0-0"
   },
   "main": "dsh-plugin.mjs",
+  "scripts": {
+    "test": "node --test tests/regression.test.mjs"
+  },
   "exports": {
     ".": "./dsh-plugin.mjs",
     "./client": "./client.js",
@@ -65,6 +68,7 @@
         "services/language-detect.mjs",
         "services/profile-history.mjs",
         "services/proxy-pool.mjs",
+        "services/system-proxy.mjs",
         "services/retry.mjs",
         "services/selling-points.mjs",
         "services/model-gateway.mjs",

@@ -18,6 +18,7 @@ const SAFE_DURING_RUN = new Set([
   '/library/export',
   '/library/reveal',
   '/feedback/list',
+  '/proxy/system',
   '/proxy/pool/reset',
   '/report/reveal',
   // 历史版本列表只读，采集运行中也可以查看。
@@ -74,37 +75,101 @@ function recentTokens(file, limit = 80) {
   }
 }
 
+// 文件夹选择脚本：DSH 服务进程不是前台进程，FolderBrowserDialog 会被前台窗口（浏览器）
+// 遮挡，用户看不到对话框。这里在 ShowDialog 期间用后台 runspace 轮询找到 #32770 对话框
+// 并强制置顶 + 抢前台，保证对话框一定出现在最前面。
+const PICK_DIALOG_SCRIPT = `
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class TikTokPickWin {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+  public static IntPtr Find(uint targetPid) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid != targetPid) return true;
+      var sb = new StringBuilder(256);
+      GetClassName(h, sb, 256);
+      if (sb.ToString() == "#32770" && IsWindowVisible(h)) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+  public static bool Promote(IntPtr h) {
+    bool ok = SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
+    SetForegroundWindow(h);
+    return ok;
+  }
+}
+'@ | Out-Null
+$poller = [powershell]::Create()
+$poller.Runspace = [runspacefactory]::CreateRunspace()
+$poller.Runspace.Open()
+$null = $poller.AddScript({
+  param($targetPid)
+  for ($i = 0; $i -lt 3600; $i++) {
+    Start-Sleep -Milliseconds 100
+    try {
+      $h = [TikTokPickWin]::Find([uint32]$targetPid)
+      if ($h -ne [IntPtr]::Zero) { [TikTokPickWin]::Promote($h) | Out-Null; return }
+    } catch { }
+  }
+}).AddArgument($PID)
+$null = $poller.BeginInvoke()
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select TikTok archive folder'
+$dialog.ShowNewFolderButton = $true
+if ($env:TIKTOK_PICK_DIR -and (Test-Path -LiteralPath $env:TIKTOK_PICK_DIR)) { $dialog.SelectedPath = $env:TIKTOK_PICK_DIR }
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  # 不能用 [Console]::Out.Write：DSH 宿主没有控制台，子进程输出编码会回落到系统 ANSI（936/GBK），
+  # 中文路径写出的字节不是 UTF-8，Node 侧解码成乱码后校验失败。这里直接写 UTF-8 原始字节。
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($dialog.SelectedPath)
+  $stream = [Console]::OpenStandardOutput()
+  $stream.Write($bytes, 0, $bytes.Length)
+  $stream.Flush()
+}
+`;
+
 function pickDirectory(current = '') {
   return new Promise((resolve) => {
-    const script = [
-      'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
-      '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
-      "$dialog.Description = 'Select TikTok archive folder'",
-      '$dialog.ShowNewFolderButton = $true',
-      'if ($env:TIKTOK_PICK_DIR -and (Test-Path -LiteralPath $env:TIKTOK_PICK_DIR)) { $dialog.SelectedPath = $env:TIKTOK_PICK_DIR }',
-      "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }",
-    ].join('; ');
-    const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
+    const script = PICK_DIALOG_SCRIPT;
+    // 不依赖宿主 PATH；精简运行环境中仅写 powershell.exe 会 spawn ENOENT。
+    const powershell = process.platform === 'win32'
+      ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+      : 'powershell.exe';
+    const child = spawn(powershell, ['-NoProfile', '-STA', '-Command', script], {
       windowsHide: false,
       env: { ...process.env, TIKTOK_PICK_DIR: String(current || '').slice(0, 1000) },
     });
-    let stdout = '';
-    let stderr = '';
+    // 保留原始字节并在退出后统一解码，避免 UTF-8 多字节字符跨 chunk 时被截断。
+    const stdoutChunks = [];
+    const stderrChunks = [];
     const timer = setTimeout(() => {
       child.kill();
       resolve({ ok: false, code: 'DIRECTORY_PICK_TIMEOUT', message: '文件夹选择超时。' });
     }, 300_000);
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.stdout.on('data', (chunk) => { stdoutChunks.push(chunk); });
+    child.stderr.on('data', (chunk) => { stderrChunks.push(chunk); });
     child.on('error', (error) => {
       clearTimeout(timer);
       resolve({ ok: false, code: 'DIRECTORY_PICK_FAILED', message: error.message });
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
-      const selected = stdout.trim();
+      const selected = Buffer.concat(stdoutChunks).toString('utf8').trim();
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
       if (!selected) {
-        resolve(code === 0 ? { ok: true, cancelled: true } : { ok: false, code: 'DIRECTORY_PICK_FAILED', message: stderr.trim() || `退出码 ${code}` });
+        resolve(code === 0 ? { ok: true, cancelled: true } : { ok: false, code: 'DIRECTORY_PICK_FAILED', message: stderr || `退出码 ${code}` });
         return;
       }
       if (!isAbsolute(selected) || !existsSync(selected) || !statSync(selected).isDirectory()) {
@@ -312,6 +377,8 @@ export function createNativeSettingsRoute({
             return send(res, 200, controller.revealPath({ file: input.file, scope: 'reports' }));
           case '/diagnostics':
             return send(res, 200, await (getDiagnostics ? getDiagnostics() : controller.diagnostics()));
+          case '/proxy/system':
+            return send(res, 200, await controller.systemProxyInfo());
           case '/proxy/pool/reset':
             return send(res, 200, { ok: true, ...controller.resetProxyPool(), status: controller.proxyPoolStatus() });
           case '/retry/list':

@@ -31,6 +31,7 @@ window.__ModuleLoader__.load({
       '/feedback/reflow',
       '/diagnostics',
       '/proxy/pool/reset',
+      '/proxy/system',
       '/retry/list',
       '/retry/clear',
       '/report/generate',
@@ -208,9 +209,8 @@ window.__ModuleLoader__.load({
         rejectedDir: String(config.storage?.rejectedDir || ''),
         port: numberInputValue(config.port ?? ''),
         proxy: {
+          mode: ['auto', 'system', 'manual'].includes(config.proxy?.mode) ? config.proxy.mode : 'auto',
           server: String(config.proxy?.server || ''),
-          username: String(config.proxy?.username || ''),
-          password: '',
           pool: (Array.isArray(config.proxy?.pool) ? config.proxy.pool : []).join('\n'),
         },
         model: {
@@ -349,6 +349,8 @@ window.__ModuleLoader__.load({
       // 候选库整库快照：隐藏与 videoId 检索都在客户端派生，服务端只负责状态/关键词/时间/评分过滤。
       const [candidateRows, setCandidateRows] = useState([]);
       const [candidateStatuses, setCandidateStatuses] = useState([]);
+      // 系统代理探测结果（「检测系统代理」按钮写入，null 表示尚未检测）。
+      const [systemProxy, setSystemProxy] = useState(null);
       const initialized = useRef(false);
       const alive = useRef(true);
       // 素材列表横向滚动：容器与底部代理滚动条双向同步，保证滚动条不必翻到页面底部才可见。
@@ -529,7 +531,7 @@ window.__ModuleLoader__.load({
           source: draft.model.source,
           provider: draft.model.source === 'dsh' ? draft.model.provider : '',
           // 非 dsh 来源只用「默认模型名」这一栏；不要再回退 draft.model.model，
-          // 那是 DSH 模型下拉的残留值，会把 legacy 的视觉/文本默认模型污染成别的模型。
+          // 那是 DSH 模型下拉的残留值，会把「默认模型」的视觉/文本默认模型污染成别的模型。
           model: draft.model.source === 'dsh' ? draft.model.model : draft.model.api.model,
           textModel: draft.model.textModel,
           visionModel: draft.model.visionModel,
@@ -541,20 +543,31 @@ window.__ModuleLoader__.load({
           storage: { rejectedDir: draft.rejectedDir },
           port: numberInputValue(draft.port),
           proxy: {
+            mode: draft.proxy.mode,
             server: draft.proxy.server,
-            username: draft.proxy.username,
             pool: parseLines(draft.proxy.pool).slice(0, 20),
           },
           model,
         };
-        if (draft.proxy.password.trim()) patch.proxy.password = draft.proxy.password.trim();
         return patch;
+      }
+
+      async function detectProxy() {
+        setBusy('detectProxy');
+        try {
+          const info = await api.request('/proxy/system', {});
+          setSystemProxy(info || {});
+        } catch (error) {
+          setSystemProxy({ error: String(error?.message || error) });
+        } finally {
+          setBusy('');
+        }
       }
 
       async function saveBasic() {
         const value = await perform('saveBasic', async () => {
           const result = await api.request('/config/configure', { patch: basicPatch() });
-          setDraft((old) => ({ ...old, model: { ...old.model, api: { ...old.model.api, apiKey: '' } }, proxy: { ...old.proxy, password: '' } }));
+          setDraft((old) => ({ ...old, model: { ...old.model, api: { ...old.model.api, apiKey: '' } } }));
           return result;
         }, '基础设置已保存。');
         return value !== null;
@@ -612,6 +625,8 @@ window.__ModuleLoader__.load({
             setNotice('已选择归档目录，点击“保存下载设置”后生效。');
           } else if (value?.cancelled) {
             setNotice('已取消文件夹选择。');
+          } else {
+            setError(value?.message || `选择文件夹失败（${value?.code || '未知错误'}）。可以直接在输入框手动填写绝对路径。`);
           }
         } catch (failure) {
           setError(failure.message || String(failure));
@@ -1126,10 +1141,14 @@ window.__ModuleLoader__.load({
       function modelSelectOptions(current = '') {
         const seen = new Set();
         const options = [];
+        // 默认模型 / DSH 来源需要提供商前缀来路由；自定义 OpenAI 接口只发送原始模型 ID。
+        const qualified = draft.model.source !== 'openai-compatible';
         for (const item of state?.model?.models || []) {
-          if (!item?.id || seen.has(item.id)) continue;
-          seen.add(item.id);
-          options.push([item.id, `${item.name || item.id}${item.inputModalities?.includes('image') ? ' · 支持图像' : ''}`]);
+          if (!item?.id || !item?.provider) continue;
+          const value = qualified ? `${item.provider}/${item.id}` : item.id;
+          if (seen.has(value)) continue;
+          seen.add(value);
+          options.push([value, `${item.name || item.id}（${item.provider}）${item.inputModalities?.includes('image') ? ' · 支持图像' : ''}`]);
         }
         const value = String(current || '').trim();
         if (value && !seen.has(value)) options.push([value, `${value}（当前配置）`]);
@@ -1339,10 +1358,13 @@ window.__ModuleLoader__.load({
         category === '基础设置' && h('div', { style: column },
           section('模型来源',
             select('模型配置方式', draft.model.source, [
-              ['legacy', '兼容旧配置（配置文件 / 环境变量 / DSH 网关）'],
+              ['legacy', '默认模型（新开对话默认选择的模型）'],
               ['openai-compatible', '自定义 OpenAI 兼容接口'],
               ['dsh', '选择 DSH 已配置的提供商与模型'],
             ], (value) => setDraft((old) => patchAt(old, ['model', 'source'], value))),
+            draft.model.source === 'legacy' && note(state?.model?.defaultSelection
+              ? `当前宿主默认模型：${state.model.defaultSelection.provider} / ${state.model.defaultSelection.model}（宿主里改了默认模型，这里会自动跟随）`
+              : '未读取到宿主默认模型，运行时会回退到旧版兼容配置（配置文件 / 环境变量 / DSH 网关）。'),
             draft.model.source === 'dsh' && h('div', { style: column },
               select('DSH 提供商', draft.model.provider, [['', ''], ...configuredProviders.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => ({ ...old, model: { ...old.model, provider: value, model: '' } }))),
               select('DSH 模型', draft.model.model, [['', ''], ...configuredModels.map((item) => [item.id, `${item.name || item.id}${item.inputModalities?.includes('image') ? ' · 支持图像' : ''}`])], (value) => setDraft((old) => patchAt(old, ['model', 'model'], value))),
@@ -1354,8 +1376,23 @@ window.__ModuleLoader__.load({
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
               select('文本模型（可选）', draft.model.textModel, [['', ''], ...modelSelectOptions(draft.model.textModel)], (value) => setDraft((old) => patchAt(old, ['model', 'textModel'], value))),
               select('视觉模型（可选）', draft.model.visionModel, [['', ''], ...modelSelectOptions(draft.model.visionModel)], (value) => setDraft((old) => patchAt(old, ['model', 'visionModel'], value)))),
-            note('文本模型用于文本预筛和卖点提取，视觉模型用于抽帧判定。对应栏留空表示不单独覆盖模型；实际模型按当前模型来源、已有配置及兼容回退逻辑确定，可在“自检与用量”查看。密钥保存后不回显，空白保存不会覆盖已保存密钥；修改模型不会中断正在运行的任务。')),
+            note('文本模型用于文本预筛和卖点提取，视觉模型用于抽帧判定。对应栏留空表示不单独覆盖模型；选“默认模型”时使用宿主新开对话默认选择的模型，文本/视觉模型可选其他提供商的模型（列表项为 提供商/模型名，运行时按所选提供商路由）；DSH 来源同样按前缀路由，自定义 OpenAI 接口则原样发送模型 ID（可包含 /）。实际路由可在“自检与用量”查看。密钥保存后不回显，空白保存不会覆盖已保存密钥；修改模型不会中断正在运行的任务。')),
           section('运行环境',
+            h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
+              select('代理模式', draft.proxy.mode, [['auto', '自动（按已填代理判断）'], ['system', '跟随系统代理（推荐）'], ['manual', '手动填写代理地址']], (value) => setDraft((old) => patchAt(old, ['proxy', 'mode'], value))),
+              h('div', { style: { display: 'flex', alignItems: 'flex-end' } },
+                h('button', { type: 'button', style: buttonStyle, disabled: busy === 'detectProxy', onClick: () => void detectProxy() }, busy === 'detectProxy' ? '检测中…' : '检测系统代理'))),
+            note(!systemProxy
+              ? '自动模式会在已有代理地址、代理池或 TIKTOK_PROXY_SERVER 时使用手动代理，否则跟随系统代理；「跟随系统代理」不单独给 Edge 指定地址，可点右侧按钮实时检测。'
+              : systemProxy.error
+                ? '检测失败：' + systemProxy.error
+                : systemProxy.supported === false
+                  ? '当前系统不支持自动读取系统代理，请改用「手动」模式填写代理地址。'
+                  : systemProxy.enabled && systemProxy.server
+                    ? '系统代理已启用：' + systemProxy.server
+                    : systemProxy.pacUrl
+                      ? '系统代理使用 PAC 脚本：' + systemProxy.pacUrl
+                      : '未检测到已启用的系统代理。'),
             field('代理地址（单代理 / 池的兜底）', draft.proxy.server, (value) => setDraft((old) => patchAt(old, ['proxy', 'server'], value))),
             h('label', { style: column }, '代理池（每行一个，留空沿用单代理）', h('textarea', {
               rows: 3,
@@ -1367,10 +1404,6 @@ window.__ModuleLoader__.load({
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !(state?.proxyPool?.size > 0), onClick: () => void perform('proxyReset', () => api.request('/proxy/pool/reset', {}), '代理冷却已重置。') }, busy === 'proxyReset' ? '重置中…' : '重置代理冷却')),
             note('代理池只用来换出口；不代登录、不切 profile 内容。多账号请用不同的 browser.profileDir（配置文件里手填），登录仍需在 Edge 窗口里手动完成。'),
-            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-              field('代理用户名', draft.proxy.username, (value) => setDraft((old) => patchAt(old, ['proxy', 'username'], value))),
-              field('代理密码', draft.proxy.password, (value) => setDraft((old) => patchAt(old, ['proxy', 'password'], value)), { type: 'password' })),
-            note('代理密码保存后不回显，空白保存不会覆盖已保存密码。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
               field('视频归档目录', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value))),
               field('CDP 端口', draft.port, (value) => setDraft((old) => patchAt(old, ['port'], numberInputValue(value))), { type: 'number', min: 1024, max: 65535 })),

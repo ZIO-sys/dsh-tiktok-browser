@@ -22,6 +22,7 @@ import { createLibrary } from './collect/library.mjs';
 import { runCollect } from './collect/batch.mjs';
 import { buildReport } from './collect/report.mjs';
 import { createSettingsService } from './services/settings-service.mjs';
+import { resolveProxyMode, detectSystemProxy } from './services/system-proxy.mjs';
 import { createModelGateway, resolveModelRoute } from './services/model-gateway.mjs';
 import { createTokenBudget } from './services/token-budget.mjs';
 import {
@@ -77,6 +78,7 @@ export class BrowserController {
   #settings;
   #llm;
   #attachments;
+  #agentDefaultModel;
   #sessionId;
   #revealHandler;
   #context = null;
@@ -86,7 +88,7 @@ export class BrowserController {
   #proxyPoolInstance = null;
   #activeProxyServer = null;
 
-  constructor({ config = {}, env = process.env, paths = null, llm = null, attachments = null, sessionId = null, revealHandler = null } = {}) {
+  constructor({ config = {}, env = process.env, paths = null, llm = null, attachments = null, agentDefaultModel = null, sessionId = null, revealHandler = null } = {}) {
     this.#env = env;
     this.#basePaths = paths || resolveRuntimePaths({ env });
     this.#paths = { ...this.#basePaths };
@@ -94,6 +96,7 @@ export class BrowserController {
     this.#config = this.#settings.raw();
     this.#llm = llm;
     this.#attachments = attachments;
+    this.#agentDefaultModel = agentDefaultModel;
     this.#sessionId = sessionId || `tiktok-browser:${randomUUID()}`;
     this.#revealHandler = typeof revealHandler === 'function' ? revealHandler : null;
     this.#syncDownloadsPath();
@@ -124,6 +127,7 @@ export class BrowserController {
       env: this.#env,
       llm: this.#llm,
       attachments: this.#attachments,
+      agentDefaultModel: this.#agentDefaultModel,
       sessionId: this.#sessionId,
     });
   }
@@ -314,12 +318,26 @@ export class BrowserController {
     };
   }
 
+  /** 宿主新开对话默认选择的模型；“默认模型”选项据此确定提供商。 */
+  #agentDefaultSelection() {
+    try {
+      const selection = this.#agentDefaultModel?.currentSelection?.();
+      const provider = String(selection?.provider || '').trim();
+      const model = String(selection?.model || '').trim();
+      return provider && model ? { provider, model } : null;
+    } catch {
+      return null;
+    }
+  }
+
   async modelCatalog() {
     const llm = this.#llm;
+    const defaultSelection = this.#agentDefaultSelection();
     if (!llm) {
       return {
         providers: [],
         models: [],
+        defaultSelection,
         errors: [{ provider: null, message: '当前 DSH 未提供模型目录服务，可改用自定义 OpenAI 兼容接口。' }],
         available: false,
       };
@@ -353,6 +371,7 @@ export class BrowserController {
     return {
       providers,
       models: groups.flatMap((group) => group.models),
+      defaultSelection,
       errors: groups.flatMap((group) => group.error ? [group.error] : []),
       available: providers.length > 0,
     };
@@ -371,9 +390,14 @@ export class BrowserController {
    */
   config() {
     const proxy = this.getProxyConfig();
+    const mode = resolveProxyMode(this.#config, this.#env);
     return {
       ...this.#settings.public(),
-      proxy: { configured: proxy.configured, server: proxy.server, hasAuth: Boolean(proxy.username || proxy.password) },
+      proxy: {
+        mode,
+        configured: mode === 'system' || proxy.configured,
+        server: mode === 'system' ? null : proxy.server,
+      },
     };
   }
 
@@ -421,6 +445,8 @@ export class BrowserController {
 
   async #proxyOption() {
     const pool = this.#proxyPool();
+    // 「跟随系统代理」：不指定 --proxy-server，让 Edge 直接使用 Windows 系统代理。
+    if (resolveProxyMode(this.#config, this.#env) === 'system') return { ok: true, option: null, system: true };
     if (pool.enabled) {
       const picked = pool.next();
       if (!picked.ok) {
@@ -441,7 +467,6 @@ export class BrowserController {
         ok: true,
         option: {
           server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
-          ...(proxy.username || proxy.password ? { username: proxy.username, password: proxy.password } : {}),
         },
         pool: { server: picked.server, source: picked.source, index: picked.index },
       };
@@ -453,7 +478,6 @@ export class BrowserController {
       ok: true,
       option: {
         server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
-        ...(proxy.username || proxy.password ? { username: proxy.username, password: proxy.password } : {}),
       },
     };
   }
@@ -473,6 +497,38 @@ export class BrowserController {
 
   async #checkProxy({ force = false } = {}) {
     const pool = this.#proxyPool();
+    // 「跟随系统代理」：读 Windows 系统代理设置，再用系统代理地址做连通性自检。
+    if (resolveProxyMode(this.#config, this.#env) === 'system') {
+      const freshSystem = Date.now() - this.#proxyCheckAt < 60_000;
+      if (!force && freshSystem && this.#proxyCheckResult) return this.#proxyCheckResult;
+      const detected = await detectSystemProxy({ force });
+      let result;
+      if (!detected.supported) {
+        result = {
+          ok: false,
+          code: PROXY_ERROR_CODES.NOT_CONFIGURED,
+          message: '当前系统不支持自动读取系统代理（仅 Windows 支持），请改用「手动」模式填写代理地址。',
+          server: null,
+        };
+      } else if (!detected.enabled || !detected.server) {
+        result = detected.pacUrl
+          ? { ok: true, code: null, message: null, server: null, system: detected, note: '系统代理使用 PAC 脚本，交由浏览器处理。' }
+          : {
+            ok: false,
+            code: PROXY_ERROR_CODES.NOT_CONFIGURED,
+            message: '未检测到已启用的系统代理。请在 Windows 设置里打开代理，或改用「手动」模式填写代理地址。',
+            server: null,
+            system: detected,
+          };
+      } else {
+        const proxy = resolveProxyConfig({ proxy: { server: detected.server } }, {});
+        result = { ...(await checkProxy({ proxy })), system: detected };
+      }
+      this.#proxyCheckAt = Date.now();
+      this.#proxyCheckResult = result;
+      this.#activeProxyServer = result.ok && result.server ? result.server : this.#activeProxyServer;
+      return result;
+    }
     // 池模式：每次都按轮换结果检查，并把结果回写给池（连续 2 次失败进入 10 分钟冷却）。
     if (pool.enabled) {
       const option = await this.#proxyOption();
@@ -528,6 +584,12 @@ export class BrowserController {
     }
     this.#host = result;
     return { ok: true };
+  }
+
+  /** 读取当前系统代理设置（只读，供设置页「检测系统代理」使用）。 */
+  async systemProxyInfo() {
+    const detected = await detectSystemProxy({ force: true });
+    return { ok: true, mode: resolveProxyMode(this.#config, this.#env), ...detected };
   }
 
   async open({ keyword = '', reuse = true, signal } = {}) {
@@ -1811,10 +1873,16 @@ export class BrowserController {
       }
     }
     const proxy = this.getProxyConfig();
+    const mode = resolveProxyMode(this.#config, this.#env);
     return {
       running: Boolean(context) || Boolean(state),
       browser: state || null,
-      proxy: { configured: proxy.configured, valid: Boolean(proxy.valid), server: proxy.server },
+      proxy: {
+        mode,
+        configured: mode === 'system' || proxy.configured,
+        valid: mode === 'system' || Boolean(proxy.valid),
+        server: mode === 'system' ? null : proxy.server,
+      },
       page: page ? { ...describePage(page), ...(signals || {}) } : null,
       state: signals ? describePageState(signals) : 'unknown',
     };

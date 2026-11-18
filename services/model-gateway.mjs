@@ -75,15 +75,46 @@ function legacyRoute(config, env, dshRoot) {
   };
 }
 
-export function resolveModelRoute({ config = {}, kind = 'vision', env = process.env, dshRoot } = {}) {
+// “默认模型”：读取挂载本插件的 DSH 宿主当前默认模型（新开对话默认选择的 provider/model）。
+// DSH 以服务名 agentDefaultModel 暴露该配置，currentSelection() 同步返回 { provider, model, reasoningEffort? }。
+function hostDefaultModel(agentDefaultModel) {
+  if (!agentDefaultModel || typeof agentDefaultModel.currentSelection !== 'function') return null;
+  try {
+    const selection = agentDefaultModel.currentSelection();
+    if (!selection || typeof selection !== 'object') return null;
+    const provider = String(selection.provider || '').trim();
+    const model = String(selection.model || '').trim();
+    if (!provider || !model) return null;
+    const reasoningEffort = typeof selection.reasoningEffort === 'string' && selection.reasoningEffort ? selection.reasoningEffort : undefined;
+    return { provider, model, reasoningEffort };
+  } catch {
+    return null;
+  }
+}
+
+// “文本/视觉模型”允许存 “提供商/模型名” 形式（如 workbuddy/glm-5v-turbo），
+// 运行时按前缀的提供商路由；纯模型名则沿用默认提供商。
+export function splitProviderModel(value, fallbackProvider = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return { provider: String(fallbackProvider || '').trim(), model: '' };
+  const slash = raw.indexOf('/');
+  if (slash <= 0 || slash === raw.length - 1) return { provider: String(fallbackProvider || '').trim(), model: raw };
+  const provider = raw.slice(0, slash).trim();
+  const model = raw.slice(slash + 1).trim();
+  if (!provider || !model) return { provider: String(fallbackProvider || '').trim(), model: raw };
+  return { provider, model };
+}
+
+export function resolveModelRoute({ config = {}, kind = 'vision', env = process.env, dshRoot, agentDefaultModel = null } = {}) {
   const settings = config?.model || {};
   const source = settings.source || 'legacy';
   const selected = kind === 'text' ? settings.textModel : settings.visionModel;
   if (source === 'dsh') {
+    const picked = splitProviderModel(selected, settings.provider);
     return {
       source: 'dsh',
-      provider: String(settings.provider || '').trim(),
-      model: String(selected || settings.model || '').trim(),
+      provider: String(picked.provider || settings.provider || '').trim(),
+      model: String(picked.model || settings.model || '').trim(),
       credentialSource: 'dsh',
     };
   }
@@ -92,17 +123,32 @@ export function resolveModelRoute({ config = {}, kind = 'vision', env = process.
     return {
       source: 'openai-compatible',
       provider: null,
+      // 自定义接口的模型 ID 可能本身包含 `/`（如 openai/gpt-4o），不能按 DSH 的提供商前缀截断。
       model: String(selected || settings.model || api.model || DEFAULT_MODEL).trim(),
       apiKey: String(api.apiKey || '').trim(),
       baseUrl: String(api.baseUrl || DEFAULT_BASE_URL).trim(),
       credentialSource: 'config',
     };
   }
+  // “默认模型”：优先跟随宿主新开对话默认选择的模型；宿主未提供时才回退到旧的三级兼容逻辑。
+  // textModel/visionModel 可用 “提供商/模型名” 跨提供商覆盖，运行时按所选提供商路由。
+  const host = hostDefaultModel(agentDefaultModel);
+  if (host) {
+    const picked = splitProviderModel(selected, host.provider);
+    return {
+      source: 'dsh',
+      provider: String(picked.provider || host.provider).trim(),
+      model: String(picked.model || host.model).trim(),
+      reasoningEffort: host.reasoningEffort,
+      credentialSource: 'agent-default-model',
+    };
+  }
   const legacy = legacyRoute(config, env, dshRoot);
+  const picked = splitProviderModel(selected);
   return {
     source: 'openai-compatible',
     provider: null,
-    model: String(selected || settings.model || legacy.model || DEFAULT_MODEL).trim(),
+    model: String(picked.model || settings.model || legacy.model || DEFAULT_MODEL).trim(),
     apiKey: legacy.apiKey,
     baseUrl: legacy.baseUrl,
     credentialSource: legacy.source,
@@ -215,7 +261,7 @@ async function convertDshMessages({ messages, system, info, attachments, signal 
       }
       if (part?.type !== 'image_url') throw failure('MODEL_MESSAGE_INVALID', '模型请求包含不支持的内容类型。');
       if (!info?.inputModalities?.includes('image') || typeof attachments?.saveImages !== 'function') {
-        throw failure('MODEL_VISION_UNAVAILABLE', '当前 DSH 模型或附件服务不支持图片输入。');
+        throw failure('MODEL_VISION_UNAVAILABLE', '当前模型不支持图片输入，可在“视觉模型（可选）”中选择支持图像的模型。');
       }
       const match = IMAGE.exec(part.image_url?.url || '');
       if (!match) throw failure('MODEL_IMAGE_INVALID', '图片必须是 jpeg/png/webp 的规范 data URL。');
@@ -247,9 +293,14 @@ async function dshChat({ route, messages, system, maxTokens, llm, attachments, s
   }
   const info = await llm.resolveModelInfo(route.provider, route.model, signal);
   const { converted, system: prompt } = await convertDshMessages({ messages, system, info, attachments, signal });
-  const reasoning = Array.isArray(info?.reasoning?.efforts) && info.reasoning.efforts.some((item) => item.id === 'off')
-    ? { reasoningEffort: 'off' }
-    : {};
+  const efforts = Array.isArray(info?.reasoning?.efforts) ? info.reasoning.efforts : [];
+  // “默认模型”带出宿主的推理档位时优先沿用；模型不支持该档位再退回 off，避免流式请求被拒。
+  const effort = route.reasoningEffort && efforts.some((item) => item.id === route.reasoningEffort) ? route.reasoningEffort : null;
+  const reasoning = effort
+    ? { reasoningEffort: effort }
+    : efforts.some((item) => item.id === 'off')
+      ? { reasoningEffort: 'off' }
+      : {};
   let content = '';
   let usage = {};
   let finish = null;
@@ -286,12 +337,13 @@ export function createModelGateway({
   dshRoot,
   llm = null,
   attachments = null,
+  agentDefaultModel = null,
   fetchImpl = globalThis.fetch,
   sessionId = `tiktok-browser:${randomUUID()}`,
   imageTokens = 1000,
 } = {}) {
   function describe(kind = 'vision') {
-    const route = resolveModelRoute({ config, kind, env, dshRoot });
+    const route = resolveModelRoute({ config, kind, env, dshRoot, agentDefaultModel });
     return {
       source: route.source,
       provider: route.provider,
@@ -316,7 +368,7 @@ export function createModelGateway({
     signal,
   } = {}) {
     if (!Array.isArray(messages) || !messages.length) return { ok: false, code: 'MODEL_MESSAGE_INVALID', message: '模型消息不能为空。' };
-    const route = resolveModelRoute({ config, kind, env, dshRoot });
+    const route = resolveModelRoute({ config, kind, env, dshRoot, agentDefaultModel });
     const estimatedTokens = estimateMessageTokens(messages, { imageTokens, maxTokens });
     const retries = Math.max(0, Math.min(Math.trunc(Number(retry?.attempts ?? 0)) || 0, 3));
     let reservation = null;

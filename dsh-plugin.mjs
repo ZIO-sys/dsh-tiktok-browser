@@ -98,6 +98,8 @@ export async function apply(ctx, config = {}) {
       config,
       llm: optionalService(ctx, 'llm'),
       attachments: optionalService(ctx, 'attachments'),
+      // “默认模型”选项据此读取宿主新开对话默认选择的模型。
+      agentDefaultModel: optionalService(ctx, 'agentDefaultModel'),
     }));
     return controllerPromise;
   };

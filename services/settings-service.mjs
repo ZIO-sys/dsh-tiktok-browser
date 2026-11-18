@@ -9,6 +9,9 @@ const FIELDS = Object.freeze({
   // 留空时使用运行目录下的默认 downloads/，方便新用户按需填写。
   downloadsDir: { kind: 'directory', allowEmpty: true },
   port: { kind: 'integer', min: 1024, max: 65535, allowEmpty: true },
+  // auto=按已填代理判断；system=跟随 Windows 系统代理；manual=使用代理地址/代理池。
+  // allowEmpty 用于兼容早期补丁可能写入的空字符串。
+  'proxy.mode': { kind: 'enum', values: ['auto', 'system', 'manual'], allowEmpty: true },
   'proxy.server': { kind: 'string' },
   // P2-5 代理池：留空沿用单代理；最多 20 个。
   'proxy.pool': { kind: 'stringArray' },
@@ -17,8 +20,6 @@ const FIELDS = Object.freeze({
   'browser.profileDir': { kind: 'directory' },
   // 被拒素材落点：配置后判定为 reject 的 mp4+json 平铺到 <dir>/<YYYY-MM-DD>/；留空则直接删。
   'storage.rejectedDir': { kind: 'directory', allowEmpty: true },
-  'proxy.username': { kind: 'string' },
-  'proxy.password': { kind: 'string' },
   'search.maxResultsPerKeyword': { kind: 'integer', min: 1, max: 200, allowEmpty: true },
   'search.tokenBudget': { kind: 'integer', min: 1, max: 1_000_000_000, allowEmpty: true },
   'search.dailyTokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000, allowEmpty: true },
@@ -81,6 +82,15 @@ function isPlainObject(value) {
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+// 代理认证能力已移除。旧配置中的凭据既不回显，也在下次保存时清理，避免继续暴露或长期残留。
+function stripRetiredProxyCredentials(config) {
+  if (config?.proxy && typeof config.proxy === 'object') {
+    delete config.proxy.username;
+    delete config.proxy.password;
+  }
+  return config;
 }
 
 function deepMerge(base, patch) {
@@ -228,20 +238,17 @@ function saveConfig(file, config) {
 }
 
 function publicConfig(raw) {
-  const config = clone(raw);
+  const config = stripRetiredProxyCredentials(clone(raw));
   const modelKey = Boolean(config?.model?.api?.apiKey || config?.judge?.api?.apiKey);
-  const proxyPassword = Boolean(config?.proxy?.password);
   if (config?.model?.api) delete config.model.api.apiKey;
   if (config?.judge?.api) {
     delete config.judge.api.apiKey;
     delete config.judge.api.key;
   }
-  if (config?.proxy) delete config.proxy.password;
   return {
     config,
     credentials: {
       modelApiKey: { configured: modelKey },
-      proxyPassword: { configured: proxyPassword },
     },
   };
 }
@@ -274,7 +281,7 @@ export function createSettingsService({ paths, overrides = {} } = {}) {
     update(patch = {}) {
       if (!isPlainObject(patch)) throw settingsError('CONFIG_INVALID_TYPE', 'patch 必须是对象。');
       validatePatchNode(patch);
-      const next = deepMerge(rawConfig, patch);
+      const next = stripRetiredProxyCredentials(deepMerge(rawConfig, patch));
       next.configVersion = CONFIG_VERSION;
       validateConfig(next);
       saveConfig(file, next);

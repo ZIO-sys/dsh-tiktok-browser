@@ -29,6 +29,7 @@ const WRITES = new Set([
   'feedback/reflow',
   'diagnostics',
   'proxy/pool/reset',
+  'proxy/system',
   'retry/list',
   'retry/clear',
   'report/generate',

@@ -10,6 +10,7 @@ import { findPageByRole } from './browser-pages.mjs';
 import { readPageSignals } from './browser-launcher.mjs';
 import { checkProxy, resolveProxyConfig, PROXY_ERROR_CODES } from './proxy-check.mjs';
 import { discoverAixExtension } from './services/aix-adapter.mjs';
+import { detectSystemProxy, resolveProxyMode } from './services/system-proxy.mjs';
 
 const MIN_NODE = [22, 13];
 const NODE_EXEC_ENV = 'TIKTOK_NODE_EXECUTABLE';
@@ -153,6 +154,47 @@ export function describeProxyConfig(proxy) {
   };
 }
 
+export function describeSystemProxyConfig(system) {
+  if (!system?.supported) {
+    return {
+      id: 'proxy-config',
+      label: '代理配置',
+      ok: false,
+      code: PROXY_ERROR_CODES.NOT_CONFIGURED,
+      detail: '当前系统不支持自动读取系统代理',
+      fix: '请改用「手动」模式填写代理地址。',
+    };
+  }
+  if (system.pacUrl && !system.server) {
+    return {
+      id: 'proxy-config',
+      label: '代理配置',
+      ok: true,
+      code: null,
+      detail: '系统代理使用 PAC 脚本，将由浏览器处理',
+      fix: null,
+    };
+  }
+  if (system.enabled && system.server) {
+    return {
+      id: 'proxy-config',
+      label: '代理配置',
+      ok: true,
+      code: null,
+      detail: `跟随系统代理：${system.server}`,
+      fix: null,
+    };
+  }
+  return {
+    id: 'proxy-config',
+    label: '代理配置',
+    ok: false,
+    code: PROXY_ERROR_CODES.NOT_CONFIGURED,
+    detail: '未检测到已启用的系统代理',
+    fix: '请在 Windows 设置里打开代理，或改用「手动」模式填写代理地址。',
+  };
+}
+
 export function describeBrowserState(state) {
   if (!state) {
     return {
@@ -195,26 +237,36 @@ export async function runDiagnostics({
   proxyCheck = checkProxy,
   probe = probeEdgeInstallation,
   readState = readBrowserState,
+  systemProxyProbe = detectSystemProxy,
 } = {}) {
-  const proxy = resolveProxyConfig(config, env);
+  const mode = resolveProxyMode(config, env);
+  const system = mode === 'system' ? await systemProxyProbe({ force: true }) : null;
+  const proxy = mode === 'system' && system?.server
+    ? resolveProxyConfig({ proxy: { server: system.server } }, {})
+    : resolveProxyConfig(config, env);
+  const proxyConfigCheck = mode === 'system' ? describeSystemProxyConfig(system) : describeProxyConfig(proxy);
   const state = paths?.browserControlDir ? readState(paths.browserControlDir) : null;
-  const checks = [describeNode(env), describeEdge(probe), describeProxyConfig(proxy), describeBrowserState(state)];
+  const checks = [describeNode(env), describeEdge(probe), proxyConfigCheck, describeBrowserState(state)];
 
-  const proxyConnectivity = await proxyCheck({ proxy }).catch((error) => ({
-    ok: false,
-    code: PROXY_ERROR_CODES.UNREACHABLE,
-    message: error?.message || '代理自检异常',
-    latencyMs: 0,
-  }));
+  const proxyConnectivity = mode === 'system' && system?.pacUrl && !system?.server
+    ? { ok: true, note: '系统代理使用 PAC 脚本，连通性由浏览器处理。' }
+    : !proxyConfigCheck.ok
+      ? { ok: false, code: proxyConfigCheck.code, message: proxyConfigCheck.detail }
+      : await proxyCheck({ proxy }).catch((error) => ({
+        ok: false,
+        code: PROXY_ERROR_CODES.UNREACHABLE,
+        message: error?.message || '代理自检异常',
+        latencyMs: 0,
+      }));
   checks.push({
     id: 'proxy-connectivity',
     label: '代理连通 TikTok',
     ok: Boolean(proxyConnectivity.ok),
     code: proxyConnectivity.code || null,
     detail: proxyConnectivity.ok
-      ? `${proxyConnectivity.server} → ${proxyConnectivity.target}（${proxyConnectivity.latencyMs}ms）`
+      ? proxyConnectivity.note || `${proxyConnectivity.server} → ${proxyConnectivity.target}（${proxyConnectivity.latencyMs}ms）`
       : proxyConnectivity.message || '代理不可用',
-    fix: proxyConnectivity.ok ? null : '检查代理软件是否运行、端口是否正确、账号密码是否有效。',
+    fix: proxyConnectivity.ok ? null : '检查代理软件是否运行、手动端口或系统代理设置是否正确。',
   });
 
   const downloadChannel = config?.download?.channel || 'page';
