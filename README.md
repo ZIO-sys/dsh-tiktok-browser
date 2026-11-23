@@ -1,6 +1,8 @@
-# tiktok-browser（dsh-tiktok-browser-local）
+# dsh-tiktok-browser-local
 
-关键词驱动的 TikTok 广告投放素材采集插件：**只读浏览**（不点赞、不评论、不转发、不关注），按关键词自动翻搜索结果、命中即下载、按关键词分目录归档，并用规则 + 视觉模型给每条素材打分，筛出适合投放的素材。
+**安装**：[github.com/ZIO-sys/dsh-tiktok-browser](https://github.com/ZIO-sys/dsh-tiktok-browser)
+
+**许可**：素材禁止商用；二创在公开渠道须署名（[同上链接](https://github.com/ZIO-sys/dsh-tiktok-browser)）。
 
 ## 安装与启用
 
