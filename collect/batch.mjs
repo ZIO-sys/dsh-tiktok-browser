@@ -5,6 +5,8 @@
  *  - 中途 halted（验证码/封禁）时立即停止，剩余关键词不跑；
  *  - 断点续跑：当天已成功跑过且有命中的关键词默认跳过，可用 resume:false 强制重跑；
  *  - 汇总每个关键词的 found/fresh/extracted/failed/skippedSeen，写一条 type:'collect' 的运行记录。
+ *  - 指定「本次采集数量」（targetVideos > 0）时：只按成功归档数计数，采满立即停；
+ *    每词不设条数上限（按 pipeline 上限 200 取），关键词跑完仍未满则继续下一轮。
  *
  * 真正的搜索/提取/下载/判定仍然复用 pipeline.runSearch，这里只做编排与统计。
  */
@@ -42,11 +44,12 @@ function ranToday(runs, keyword, now = new Date()) {
  * @param {string[]} options.keywords 关键词列表（必填，去重后逐个跑）
  * @param {(args: object) => Promise<object>} options.search 通常是 controller.search 绑定
  * @param {object} options.store createStore 实例
- * @param {number} [options.maxPerRun] 每个关键词最多取多少条
+ * @param {number} [options.maxPerRun] 每个关键词最多取多少条（targetVideos > 0 时不生效）
+ * @param {number} [options.targetVideos] 本次要成功归档的视频数量；0/留空 = 旧行为
  * @param {string|null} [options.profileId] 判定用的画像
  * @param {boolean} [options.download] 是否边搜边下载
  * @param {boolean} [options.judge] 是否边搜边判定
- * @param {boolean} [options.resume] 是否跳过今天已成功的关键词
+ * @param {boolean} [options.resume] 是否跳过今天已成功的关键词（targetVideos > 0 时不生效）
  * @param {number} [options.pauseMs] 关键词之间的间隔
  * @param {(msg: string) => void} [options.log]
  * @param {(progress: object) => void} [options.onProgress] 每个关键词结束后回报累计进度
@@ -57,6 +60,7 @@ export async function runCollect({
   search,
   store,
   maxPerRun = 40,
+  targetVideos = 0,
   profileId = null,
   download = true,
   judge = true,
@@ -82,16 +86,27 @@ export async function runCollect({
   let budgetExhausted = false;
   let manualDownloadRequired = false;
 
-  const target = list.length * Math.max(0, Number(maxPerRun) || 0);
+  const goal = Math.max(0, Math.min(200, Math.floor(Number(targetVideos) || 0)));
+  const goalMode = goal > 0;
+  // 目标模式下不设每词条数上限：按 pipeline 允许的最大值取。
+  const perKeywordLimit = goalMode ? 200 : maxPerRun;
+  // 只累计 pipeline 确认的实际归档成功数；accepted 可能包含下载失败，不能作为成功数。
+  const succeededCount = () => totals.succeeded;
+
+  const target = goalMode ? goal : list.length * Math.max(0, Number(maxPerRun) || 0);
+  let round = 0;
   const report = (index, keyword) => {
     if (typeof onProgress !== 'function') return;
     try {
+      totals.succeeded = succeededCount();
       onProgress({
         index,
         total: list.length,
+        round: round + 1,
         keyword: keyword || null,
-        found: totals.found,
+        found: goalMode ? totals.succeeded : totals.found,
         target,
+        succeeded: totals.succeeded,
         totals: { ...totals },
         at: new Date().toISOString(),
       });
@@ -102,51 +117,89 @@ export async function runCollect({
 
   report(0, null);
 
-  for (let i = 0; i < list.length; i += 1) {
-    const keyword = list[i];
-    signal?.throwIfAborted?.();
+  // 目标模式：关键词跑完仍未达标就再来一轮；每轮至少要新增一个成功，否则停止，避免死循环。
+  const maxRounds = goalMode ? 20 : 1;
+  let targetReached = false;
+  for (; round < maxRounds; round += 1) {
+    const beforeRound = succeededCount();
+    for (let i = 0; i < list.length; i += 1) {
+      const keyword = list[i];
+      signal?.throwIfAborted?.();
 
-    if (resume && ranToday(runs, keyword)) {
-      log(`[${i + 1}/${list.length}] ${keyword} → 今天已跑过，跳过（resume:false 可强制重跑）`);
-      results.push({ query: keyword, skipped: true, reason: 'ran_today' });
-      totals.skippedKeywords += 1;
+      if (goalMode && succeededCount() >= goal) {
+        targetReached = true;
+        break;
+      }
+
+      // 目标模式不跳过当天跑过的关键词：目标是「成功数」，重跑才能继续产出。
+      if (!goalMode && resume && ranToday(runs, keyword)) {
+        log(`[${i + 1}/${list.length}] ${keyword} → 今天已跑过，跳过（resume:false 可强制重跑）`);
+        results.push({ query: keyword, skipped: true, reason: 'ran_today' });
+        totals.skippedKeywords += 1;
+        report(i + 1, keyword);
+        continue;
+      }
+
+      log(`[${i + 1}/${list.length}] ${keyword} → 开始${goalMode ? `（还差 ${Math.max(0, goal - succeededCount())} 个成功）` : ''}`);
+      let outcome;
+      try {
+        outcome = await search({
+          query: keyword,
+          limit: perKeywordLimit,
+          stopAfter: goalMode ? Math.max(1, goal - succeededCount()) : undefined,
+          detail: true,
+          download,
+          judge,
+          profileId,
+          signal,
+        });
+      } catch (error) {
+        outcome = { ok: false, code: 'SEARCH_THREW', message: String(error?.message || error) };
+      }
+
+      results.push({ query: keyword, round: round + 1, ...pickCounts(outcome) });
+      addCounts(totals, outcome);
       report(i + 1, keyword);
-      continue;
+
+      if (goalMode && succeededCount() >= goal) {
+        targetReached = true;
+        log(`[${i + 1}/${list.length}] ${keyword} → 已成功采集 ${succeededCount()}/${goal} 个，达标停止`);
+        break;
+      }
+
+      if (outcome?.halted) {
+        halted = outcome.halt || { reason: outcome.code || 'HALTED', query: keyword };
+        log(`[${i + 1}/${list.length}] ${keyword} → 触发挂起，停止后续关键词`);
+        break;
+      }
+
+      if (outcome?.budgetExhausted || outcome?.code === 'TOKEN_BUDGET_EXHAUSTED') {
+        budgetExhausted = true;
+        log(`[${i + 1}/${list.length}] ${keyword} → Token 预算耗尽，保留断点并停止后续关键词`);
+        break;
+      }
+
+      if (outcome?.manualDownloadRequired) {
+        manualDownloadRequired = true;
+        log(`[${i + 1}/${list.length}] ${keyword} → 下载需要人工接管，保留现场并停止后续关键词`);
+        break;
+      }
+
+      if (i < list.length - 1 && pauseMs > 0) await sleep(pauseMs);
     }
 
-    log(`[${i + 1}/${list.length}] ${keyword} → 开始`);
-    let outcome;
-    try {
-      outcome = await search({ query: keyword, limit: maxPerRun, detail: true, download, judge, profileId, signal });
-    } catch (error) {
-      outcome = { ok: false, code: 'SEARCH_THREW', message: String(error?.message || error) };
-    }
+    if (targetReached || halted || budgetExhausted || manualDownloadRequired) break;
+    if (!goalMode) break;
 
-    results.push({ query: keyword, ...pickCounts(outcome) });
-    addCounts(totals, outcome);
-    report(i + 1, keyword);
-
-    if (outcome?.halted) {
-      halted = outcome.halt || { reason: outcome.code || 'HALTED', query: keyword };
-      log(`[${i + 1}/${list.length}] ${keyword} → 触发挂起，停止后续关键词`);
+    const gained = succeededCount() - beforeRound;
+    if (gained <= 0) {
+      log(`第 ${round + 1} 轮结束：本轮没有新增成功视频，停止继续轮询（成功 ${succeededCount()}/${goal}）`);
       break;
     }
-
-    if (outcome?.budgetExhausted || outcome?.code === 'TOKEN_BUDGET_EXHAUSTED') {
-      budgetExhausted = true;
-      log(`[${i + 1}/${list.length}] ${keyword} → Token 预算耗尽，保留断点并停止后续关键词`);
-      break;
-    }
-
-    if (outcome?.manualDownloadRequired) {
-      manualDownloadRequired = true;
-      log(`[${i + 1}/${list.length}] ${keyword} → 下载需要人工接管，保留现场并停止后续关键词`);
-      break;
-    }
-
-    if (i < list.length - 1 && pauseMs > 0) await sleep(pauseMs);
+    log(`第 ${round + 1} 轮结束：成功 ${succeededCount()}/${goal}，继续下一轮`);
   }
 
+  totals.succeeded = succeededCount();
   report(list.length, null);
   const durationMs = Date.now() - startedAt;
   store.recordRun({
@@ -154,6 +207,9 @@ export async function runCollect({
     keywords: list,
     profileId,
     maxPerRun,
+    targetVideos: goal,
+    succeeded: totals.succeeded,
+    targetReached,
     download,
     judge,
     halted: Boolean(halted),
@@ -163,11 +219,24 @@ export async function runCollect({
     totals,
   });
 
+  const legacyOk = results.some((row) => !row.skipped && row.found > 0) || totals.extracted > 0;
+  // 目标模式下必须真的采满才算完成；否则任务状态应显示未达标，而不是「已完成」。
+  const ok = !budgetExhausted && !manualDownloadRequired && (goalMode ? targetReached : legacyOk);
+  const shortfall = goalMode && !targetReached && !halted && !budgetExhausted && !manualDownloadRequired;
+
   return {
-    ok: !budgetExhausted && !manualDownloadRequired && (results.some((row) => !row.skipped && row.found > 0) || totals.extracted > 0),
+    ok,
+    ...(shortfall
+      ? {
+          code: 'TARGET_NOT_REACHED',
+          message: `本次目标 ${goal} 个成功视频，实际成功 ${totals.succeeded} 个；关键词已跑完且本轮没有新增成功，任务提前结束。`,
+        }
+      : {}),
     keywords: list,
     results,
     totals,
+    targetVideos: goal,
+    targetReached,
     halted,
     budgetExhausted,
     manualDownloadRequired,
@@ -186,6 +255,7 @@ function emptyTotals() {
     failed: 0,
     skippedSeen: 0,
     skippedLanguage: 0,
+    skippedAspect: 0,
     duplicateSkipped: 0,
     duplicateChecked: 0,
     duplicateHashFailed: 0,
@@ -193,15 +263,9 @@ function emptyTotals() {
     retryExhausted: 0,
     prefilterSkipped: 0,
     prefilterTokensSaved: 0,
-    coverChecked: 0,
-    coverSkipped: 0,
-    coverUnavailable: 0,
-    coverTokensSaved: 0,
-    textChecked: 0,
-    textSkipped: 0,
-    textTokensSaved: 0,
     accepted: 0,
     rejected: 0,
+    succeeded: 0,
   };
 }
 
@@ -217,6 +281,7 @@ function pickCounts(outcome) {
     failed: Number(outcome?.failed) || 0,
     skippedSeen: Number(outcome?.skippedSeen) || 0,
     skippedLanguage: Number(outcome?.skippedLanguage) || 0,
+    skippedAspect: Number(outcome?.skippedAspect) || 0,
     duplicateSkipped: Number(outcome?.duplicateSkipped) || 0,
     duplicateChecked: Number(outcome?.duplicateChecked) || 0,
     duplicateHashFailed: Number(outcome?.duplicateHashFailed) || 0,
@@ -224,15 +289,9 @@ function pickCounts(outcome) {
     retryExhausted: Number(outcome?.retryExhausted) || 0,
     prefilterSkipped: Number(outcome?.prefilterSkipped) || 0,
     prefilterTokensSaved: Number(outcome?.prefilterTokensSaved) || 0,
-    coverChecked: Number(outcome?.coverChecked) || 0,
-    coverSkipped: Number(outcome?.coverSkipped) || 0,
-    coverUnavailable: Number(outcome?.coverUnavailable) || 0,
-    coverTokensSaved: Number(outcome?.coverTokensSaved) || 0,
-    textChecked: Number(outcome?.textChecked) || 0,
-    textSkipped: Number(outcome?.textSkipped) || 0,
-    textTokensSaved: Number(outcome?.textTokensSaved) || 0,
     accepted: Number(outcome?.accepted) || 0,
     rejected: Number(outcome?.rejected) || 0,
+    succeeded: Number(outcome?.succeeded) || 0,
     halted: Boolean(outcome?.halted),
   };
 }
@@ -240,7 +299,7 @@ function pickCounts(outcome) {
 function addCounts(totals, outcome) {
   const row = pickCounts(outcome);
   totals.keywords += 1;
-  for (const key of ['found', 'fresh', 'extracted', 'downloaded', 'failed', 'skippedSeen', 'skippedLanguage', 'duplicateSkipped', 'duplicateChecked', 'duplicateHashFailed', 'retryQueued', 'retryExhausted', 'prefilterSkipped', 'prefilterTokensSaved', 'coverChecked', 'coverSkipped', 'coverUnavailable', 'coverTokensSaved', 'textChecked', 'textSkipped', 'textTokensSaved', 'accepted', 'rejected']) {
+  for (const key of ['found', 'fresh', 'extracted', 'downloaded', 'failed', 'skippedSeen', 'skippedLanguage', 'skippedAspect', 'duplicateSkipped', 'duplicateChecked', 'duplicateHashFailed', 'retryQueued', 'retryExhausted', 'prefilterSkipped', 'prefilterTokensSaved', 'accepted', 'rejected', 'succeeded']) {
     totals[key] += row[key];
   }
 }

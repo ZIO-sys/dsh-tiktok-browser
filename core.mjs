@@ -32,8 +32,6 @@ import {
 } from './services/daily-budget.mjs';
 import { createDownloadManager } from './services/downloader.mjs';
 import { expandKeywords } from './services/keyword-expander.mjs';
-import { buildInterestProfile as buildInterestProfileWithModel, normalizeInterestProfile } from './services/interest-profile.mjs';
-import { listVersions, readVersion, writeVersion } from './services/profile-history.mjs';
 import { resolveDedupOptions, createDedupIndex } from './services/dedup.mjs';
 import { filterCandidateRows, exportCandidatesCsv } from './services/export.mjs';
 import { createRetryQueue, RETRY_DEFAULTS } from './services/retry.mjs';
@@ -775,6 +773,8 @@ export class BrowserController {
       if (row.status === CANDIDATE_STATUS.ARCHIVED) return false;
       // P1-5：语言不符的候选已经决定不下载，绕过筛选单独补下载也不做，避免白花流量。
       if (row.status === CANDIDATE_STATUS.SKIPPED_LANGUAGE) return false;
+      // 画幅不符的候选同理：非 9:16 竖屏不再补下载。
+      if (row.status === CANDIDATE_STATUS.SKIPPED_ASPECT) return false;
       return urlOnlyDownload
         ? Boolean(row.url || row.video?.downloadAddr || row.video?.playAddr)
         : Boolean(row.video?.downloadAddr || row.video?.playAddr);
@@ -880,10 +880,7 @@ export class BrowserController {
         threshold: this.#config?.judge?.threshold ?? 60,
         modelWeight: this.#config?.judge?.modelWeight ?? 0.6,
         prefilter: this.#config?.judge?.prefilter ?? 'off',
-        coverPrefilter: this.#config?.judge?.coverPrefilter === true,
-        textPrefilter: this.#config?.judge?.textPrefilter === true,
         dedup: this.#config?.dedup?.enabled === true,
-        sellingPoints: this.#config?.judge?.sellingPoints === true,
         model: this.#modelGateway().describe('vision').model || null,
         modelSource: this.#modelGateway().describe('vision').source,
         modelConfigured: this.#modelGateway().describe('vision').configured,
@@ -918,7 +915,8 @@ export class BrowserController {
   /** 查看样例库：样例清单 + 索引统计 + 正/反样例数量。 */
   library() {
     const lib = this.#library();
-    const samples = lib.listSamples({ limit: 500 });
+    // 文件夹计数与内容必须来自全量索引；截断到前 500 条会漏掉后续画像文件夹。
+    const samples = lib.listSamples({ limit: 100_000 });
     const byProfile = {};
     for (const sample of samples) {
       const key = sample.profileId || 'unassigned';
@@ -953,22 +951,25 @@ export class BrowserController {
    * 素材库分页查询：只返回列表需要的小字段，避免把整库塞进每 2.5s 轮询的 /state。
    * 同一 videoId 以最后一条候选为准（store.loadCandidates 已去重）。
    */
-  libraryCandidates({ status = '', query = '', sinceDays = 0, limit = 30, offset = 0, minScore = 0, tag = '', videoId = '' } = {}) {
+  libraryCandidates({ status = '', query = '', sinceDays = 0, date = '', limit = 30, offset = 0, minScore = 0, tag = '', videoId = '' } = {}) {
     const store = this.#store();
     const rows = [...store.loadCandidates().values()];
     // 筛选逻辑与导出共用同一实现，保证 CSV 行数与这里一致。
-    // 列表默认隐藏 3 天前的旧记录（只影响展示，不删文件/数据）。两种情况绕过该隐藏：
+    // 列表默认隐藏 3 天前的旧记录（只影响展示，不删文件/数据）。三种情况绕过该隐藏：
     //   1) 按 videoId 精确检索 —— 旧素材仍要能查到；
-    //   2) 用户主动把「时间范围」放宽到 7/30 天 —— 此时按用户所选范围显示，避免下拉框形同虚设。
+    //   2) 用户主动把「时间范围」放宽到 7/30 天 —— 此时按用户所选范围显示，避免下拉框形同虚设；
+    //   3) 用户按「采集日期」筛选 —— 选到哪一天就显示哪一天，包括 3 天前的旧日期。
     // 导出不走这里的 maxAgeDays，保持全量。
     const exactVideoId = String(videoId || '').trim();
+    const wantedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '').trim()) ? String(date).trim() : '';
     const wideRange = Number(sinceDays) > LIBRARY_HIDE_AFTER_DAYS;
     const matched = filterCandidateRows(rows, {
       status,
       query,
       sinceDays,
+      date: wantedDate,
       videoId: exactVideoId,
-      maxAgeDays: exactVideoId || wideRange ? 0 : LIBRARY_HIDE_AFTER_DAYS,
+      maxAgeDays: exactVideoId || wideRange || wantedDate ? 0 : LIBRARY_HIDE_AFTER_DAYS,
     });
     // P2-4：人工评分/标签筛选（只在设置页生效，导出仍按状态/关键词/时间）。
     const feedback = this.#feedbackStore();
@@ -1004,6 +1005,7 @@ export class BrowserController {
         language: row.language?.code && row.language.code !== 'unknown' ? row.language.code : '',
         url: row.url || '',
         updatedAt: row.updatedAt || '',
+        collectedAt: row.collectedAt || '',
         archive: { file: exists ? file : '', bytes: Number(row.archive?.bytes) || 0, exists },
         feedback: own
           ? { favorite: own.favorite === true, score: own.score ?? null, tags: own.tags || [], at: own.at || null, reflow: own.reflow || null }
@@ -1027,10 +1029,11 @@ export class BrowserController {
    * P2-2 导出候选 CSV：筛选口径与 libraryCandidates 完全一致（同一个 filterCandidateRows）。
    * 只读候选库，写 exports/candidates-YYYY-MM-DD.csv（UTF-8 BOM）。
    */
-  exportCandidates({ status = '', query = '', sinceDays = 0 } = {}) {
+  exportCandidates({ status = '', query = '', sinceDays = 0, date = '' } = {}) {
     const store = this.#store();
     const rows = [...store.loadCandidates().values()];
-    const matched = filterCandidateRows(rows, { status, query, sinceDays });
+    const wantedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '').trim()) ? String(date).trim() : '';
+    const matched = filterCandidateRows(rows, { status, query, sinceDays, date: wantedDate });
     const exportsDir = join(this.#paths.stateDir, 'exports');
     const result = exportCandidatesCsv({ rows: matched, exportsDir });
     return {
@@ -1039,6 +1042,7 @@ export class BrowserController {
         status: String(status || 'all') || 'all',
         query: String(query || ''),
         sinceDays: Number(sinceDays) || 0,
+        date: wantedDate,
       },
       counts: store.countCandidates(),
     };
@@ -1123,8 +1127,13 @@ export class BrowserController {
     return this.#library().setSamplePolarity({ sampleId, polarity });
   }
 
+  /** 删除一条样例：索引、sidecar 与库内视频副本一起删（不可恢复）。 */
+  libraryRemoveSample({ sampleId = '' } = {}) {
+    return this.#library().removeSample({ sampleId });
+  }
+
   /** 从样例库生成画像卡（可校准阈值）；目标画像正样例不足时自动接管“未指定归属”的样例。 */
-  profileBuild({ profileId = '', name = '', threshold = null, calibrate = false, minSamples = 3, includeUnassigned = true } = {}) {
+  async profileBuild({ profileId = '', name = '', threshold = null, calibrate = false, minSamples = 3, includeUnassigned = true } = {}) {
     const rawId = String(profileId || '').trim();
     if (!rawId) return { ok: false, code: 'INVALID_ARGUMENT', message: '画像 ID 不能为空；例如填 puzzle-match3。' };
     if (!/^[\p{L}\p{N}_-]{1,64}$/u.test(rawId)) {
@@ -1140,7 +1149,16 @@ export class BrowserController {
     if (includeUnassigned && owned < min && unassigned > 0) {
       adopted = lib.assignUnassigned(id);
     }
-    const result = lib.buildProfile({ profileId: id, name, threshold, minSamples: min });
+    const buildOptions = {
+      profileId: id,
+      name,
+      threshold,
+      minSamples: min,
+      gateway: this.#modelGateway(),
+      env: this.#env,
+      budgetFactory: () => this.#tokenBudget(),
+    };
+    const result = await lib.buildProfile(buildOptions);
     if (!result.ok) {
       const remain = lib.countSamples({ profileId: id, polarity: 'positive' });
       const negatives = lib.countSamples({ profileId: id, polarity: 'negative' });
@@ -1163,12 +1181,22 @@ export class BrowserController {
         negatives: lib.listSamples({ profileId: id, polarity: 'negative' }),
       });
       if (calibration && Number.isFinite(Number(calibration.threshold))) {
-        lib.buildProfile({ profileId: id, name, threshold: calibration.threshold, minSamples: min });
-        return { ok: true, profile: { ...result.profile, threshold: calibration.threshold }, calibration, adopted, dir: this.#paths.libraryDir };
+        // 校准只调整阈值；不要再次补抽帧、调用视觉描述和文本合成模型。
+        const adjusted = lib.updateProfile({ profileId: id, patch: { threshold: calibration.threshold } });
+        if (!adjusted.ok) return adjusted;
+        return {
+          ok: true,
+          profile: adjusted.profile,
+          calibration,
+          adopted,
+          backfill: result.backfill,
+          synthesis: result.synthesis,
+          dir: this.#paths.libraryDir,
+        };
       }
-      return { ok: true, profile: result.profile, calibration, adopted, dir: this.#paths.libraryDir };
+      return { ok: true, profile: result.profile, calibration, adopted, backfill: result.backfill, synthesis: result.synthesis, dir: this.#paths.libraryDir };
     }
-    return { ok: true, profile: result.profile, adopted, dir: this.#paths.libraryDir };
+    return { ok: true, profile: result.profile, adopted, backfill: result.backfill, synthesis: result.synthesis, dir: this.#paths.libraryDir };
   }
 
   /** 保存对已生成素材筛选画像的人工修改。 */
@@ -1179,42 +1207,18 @@ export class BrowserController {
     return this.#library().updateProfile({ profileId: id, patch });
   }
 
-  /** 保存对已生成观看兴趣画像的人工修改。 */
-  saveInterestProfile({ id = '', patch = {} } = {}) {
-    const profileId = String(id || '').trim();
-    if (!/^[\p{L}\p{N}_-]{1,64}$/u.test(profileId)) {
-      return { ok: false, code: 'INVALID_ARGUMENT', message: '画像 ID 不合法。' };
-    }
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-      return { ok: false, code: 'INVALID_ARGUMENT', message: 'patch 必须是对象。' };
-    }
-    const file = join(this.#interestDir(), `${profileId}.json`);
-    if (!existsSync(file)) {
-      return { ok: false, code: 'NOT_FOUND', message: `没有观看兴趣画像 ${profileId}。` };
-    }
-    let current;
+  /** 删除一张素材筛选画像：画像本身、历史版本与归属它的全部样例一起删（不可恢复）。 */
+  removeMaterialProfile({ id = '' } = {}) {
+    const result = this.#library().removeProfile({ profileId: id });
+    if (!result.ok) return result;
     try {
-      current = JSON.parse(readFileSync(file, 'utf8'));
+      if (this.#config?.search?.defaultProfileId === result.profileId) {
+        this.updateConfig({ search: { defaultProfileId: '' } });
+      }
     } catch {
-      return { ok: false, code: 'PROFILE_CORRUPTED', message: '观看兴趣画像文件无法解析。' };
+      // 配置清理失败不影响画像删除结果。
     }
-    if (!current || current.id !== profileId) {
-      return { ok: false, code: 'PROFILE_CORRUPTED', message: '观看兴趣画像文件内容不匹配。' };
-    }
-    const merged = normalizeInterestProfile(
-      { ...current, ...patch },
-      { id: profileId, sampleCount: Number(current.sampleCount) || 0 },
-    );
-    if (!merged) {
-      return { ok: false, code: 'INVALID_ARGUMENT', message: '至少保留 summary、interests 或 positiveSeeds 之一。' };
-    }
-    merged.generatedAt = current.generatedAt || merged.generatedAt;
-    merged.updatedAt = new Date().toISOString();
-    this.#recordInterestVersion(current, 'edit');
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
-    renameSync(temp, file);
-    return { ok: true, profile: merged, file };
+    return result;
   }
 
   /** 素材筛选画像的历史版本（新 → 旧）。 */
@@ -1230,43 +1234,6 @@ export class BrowserController {
       return { ok: false, code: 'INVALID_ARGUMENT', message: '需要 version。' };
     }
     return this.#library().restoreProfile({ profileId: id, version });
-  }
-
-  /** 观看兴趣画像的历史版本（新 → 旧）。 */
-  listInterestProfileHistory({ id = '' } = {}) {
-    const profileId = String(id || '').trim();
-    if (!profileId) return { ok: false, code: 'INVALID_ARGUMENT', message: '需要画像 ID。' };
-    return listVersions({ rootDir: this.#interestHistoryRoot(), id: profileId });
-  }
-
-  /** 把观看兴趣画像恢复到某个历史版本（恢复前先给当前版本留档）。 */
-  restoreInterestProfile({ id = '', version = '' } = {}) {
-    const profileId = String(id || '').trim();
-    if (!/^[\p{L}\p{N}_-]{1,64}$/u.test(profileId)) {
-      return { ok: false, code: 'INVALID_ARGUMENT', message: '画像 ID 不合法。' };
-    }
-    if (!String(version || '').trim()) {
-      return { ok: false, code: 'INVALID_ARGUMENT', message: '需要 version。' };
-    }
-    const target = readVersion({ rootDir: this.#interestHistoryRoot(), id: profileId, version });
-    if (!target.ok) return target;
-    if (target.data.id !== profileId) {
-      return { ok: false, code: 'PROFILE_CORRUPTED', message: `版本 ${version} 的画像 ID 与目标不一致。` };
-    }
-    const file = join(this.#interestDir(), `${profileId}.json`);
-    let current = null;
-    try {
-      current = JSON.parse(readFileSync(file, 'utf8'));
-    } catch {
-      current = null;
-    }
-    if (current && current.id === profileId) this.#recordInterestVersion(current, 'restore');
-    const now = new Date().toISOString();
-    const next = { ...target.data, restoredAt: now, updatedAt: now };
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    renameSync(temp, file);
-    return { ok: true, profile: next, version: target.version, restoredAt: now };
   }
 
   /** 清空样例与全部画像（需显式 confirm）；清空后隐藏内置默认画像。 */
@@ -1289,82 +1256,6 @@ export class BrowserController {
     return this.#library().restoreDefaultProfiles();
   }
 
-  #interestDir() {
-    return join(this.#paths.libraryDir, 'interest-profiles');
-  }
-
-  #interestHistoryRoot() {
-    // 历史工具内部拼 `.history`，这里传兴趣画像父目录。
-    return this.#interestDir();
-  }
-
-  /** 兴趣画像留档；写历史失败不应阻塞画像本身的保存。 */
-  #recordInterestVersion(profile, source) {
-    if (!profile || typeof profile !== 'object' || !profile.id) return null;
-    try {
-      const result = writeVersion({ rootDir: this.#interestHistoryRoot(), id: profile.id, source, data: profile });
-      return result.ok ? result : null;
-    } catch {
-      return null;
-    }
-  }
-
-  listInterestProfiles() {
-    const dir = this.#interestDir();
-    if (!existsSync(dir)) return { ok: true, count: 0, profiles: [] };
-    const profiles = [];
-    for (const entry of readdirSync(dir)) {
-      if (!entry.endsWith('.json')) continue;
-      try {
-        const parsed = JSON.parse(readFileSync(join(dir, entry), 'utf8'));
-        if (parsed?.id) profiles.push(parsed);
-      } catch {
-        // 损坏的画像不阻塞设置页。
-      }
-    }
-    profiles.sort((left, right) => String(right.generatedAt || '').localeCompare(String(left.generatedAt || '')));
-    return { ok: true, count: profiles.length, profiles };
-  }
-
-  async buildInterestProfile({ id = 'interest', name = '', minSamples = 3, signal } = {}) {
-    const dailyBlocked = this.#dailyBudgetBlocked();
-    if (dailyBlocked) return dailyBlocked;
-    const profileId = String(id || 'interest').replace(/[^\p{L}\p{N}_-]+/gu, '-').slice(0, 64) || 'interest';
-    const samples = this.#library().listSamples({ limit: 200 });
-    if (samples.length < Math.max(1, Number(minSamples) || 3)) {
-      return { ok: false, code: 'NOT_ENOUGH_SAMPLES', message: `样例不足：${samples.length} 条，至少需要 ${minSamples} 条。` };
-    }
-    const budget = this.#tokenBudget() || createTokenBudget({
-      limit: 50_000,
-      ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl'),
-    });
-    const result = await buildInterestProfileWithModel({
-      samples,
-      gateway: this.#modelGateway(),
-      budget,
-      signal,
-      id: profileId,
-    });
-    if (!result.ok) return { ...result, budget: budget.state() };
-    const profile = { ...result.profile, ...(name.trim() ? { name: name.trim().slice(0, 80) } : {}) };
-    const dir = this.#interestDir();
-    mkdirSync(dir, { recursive: true });
-    const file = join(dir, `${profileId}.json`);
-    // 重新生成前把旧兴趣画像存进历史（source=build）。
-    if (existsSync(file)) {
-      try {
-        const previous = JSON.parse(readFileSync(file, 'utf8'));
-        if (previous?.id === profileId) this.#recordInterestVersion(previous, 'build');
-      } catch {
-        // 旧文件损坏时跳过留档，直接覆盖。
-      }
-    }
-    const temp = `${file}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(profile, null, 2)}\n`, 'utf8');
-    renameSync(temp, file);
-    return { ok: true, profile, file, model: result.model, source: result.source, usage: result.usage, budget: budget.state() };
-  }
-
   async previewKeywords({
     seeds = [],
     targetCount = 10,
@@ -1377,12 +1268,14 @@ export class BrowserController {
       .map((item) => String(item || '').trim())
       .filter(Boolean))].slice(0, 20);
     if (!cleanSeeds.length) return { ok: false, code: 'INVALID_ARGUMENT', message: '至少填写一个种子词。' };
-    const dailyBlocked = this.#dailyBudgetBlocked();
+    // 0 表示只用种子词：这条路径不调用模型，因此也不应被模型 token 预算拦截。
+    const skipExpansion = Number(targetCount) === 0;
+    const dailyBlocked = skipExpansion ? null : this.#dailyBudgetBlocked();
     if (dailyBlocked) return dailyBlocked;
-    const budget = this.#tokenBudget() || createTokenBudget({
+    const budget = skipExpansion ? null : (this.#tokenBudget() || createTokenBudget({
       limit: 50_000,
       ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl'),
-    });
+    }));
     const result = await expandKeywords({
       seeds: cleanSeeds,
       targetCount,
@@ -1393,7 +1286,7 @@ export class BrowserController {
       budget,
       signal,
     });
-    return { ...result, seeds: cleanSeeds, budget: budget.state() };
+    return { ...result, seeds: cleanSeeds, budget: budget?.state() || null };
   }
 
   async expandAndCollect({
@@ -1404,6 +1297,8 @@ export class BrowserController {
     exclude = [],
     profileId = null,
     maxPerRun = 5,
+    // 本次要成功归档的视频数量；0 = 沿用「关键词数 × 每词条数」旧行为。
+    targetVideos = 0,
     download = true,
     judge = true,
     resume = true,
@@ -1446,6 +1341,7 @@ export class BrowserController {
     const result = await this.collect({
       keywords,
       maxPerRun,
+      targetVideos,
       profileId,
       download,
       judge,
@@ -1678,6 +1574,7 @@ export class BrowserController {
   async collect({
     keywords = [],
     maxPerRun = 40,
+    targetVideos = 0,
     profileId = null,
     download = true,
     judge = true,
@@ -1723,6 +1620,7 @@ export class BrowserController {
       keywords: list,
       store,
       maxPerRun,
+      targetVideos,
       profileId,
       download,
       judge,
@@ -1741,6 +1639,7 @@ export class BrowserController {
           judgePaths: this.#paths,
           query: args.query,
           limit: args.limit,
+          stopAfter: args.stopAfter,
           detail: true,
           download: args.download,
           downloadsDir: this.#paths.downloadsDir,
@@ -1796,6 +1695,7 @@ export class BrowserController {
           status: args.status || '',
           query: args.query || '',
           sinceDays: args.sinceDays || 0,
+          date: args.date || '',
         });
       case 'tiktok_judge':
         return this.judge({

@@ -13,18 +13,16 @@ window.__ModuleLoader__.load({
       '/run/stop',
       '/profiles/material/build',
       '/profiles/material/save',
-      '/profiles/interest/build',
-      '/profiles/interest/save',
+      '/profiles/material/delete',
       '/profiles/material/history',
       '/profiles/material/restore',
-      '/profiles/interest/history',
-      '/profiles/interest/restore',
       '/library/purge',
       '/library/restore-defaults',
       '/library/candidates',
       '/library/export',
       '/library/reveal',
       '/library/sample/polarity',
+      '/library/sample/delete',
       '/feedback/list',
       '/feedback/save',
       '/feedback/remove',
@@ -94,6 +92,7 @@ window.__ModuleLoader__.load({
       download_failed: '下载失败',
       rejected: '已拒绝',
       skipped_language: '语言不符',
+      skipped_aspect: '画幅不符',
       duplicate: '重复',
     };
     const HISTORY_SOURCE_LABELS = { build: '生成', edit: '编辑保存', restore: '恢复前留档', import: '导入' };
@@ -188,9 +187,9 @@ window.__ModuleLoader__.load({
     // 新用户首次打开时，文本与数值输入框均不预填；留空提交时才回退到这些内部默认值。
     const INPUT_DEFAULTS = Object.freeze({
       materialThreshold: 60,
-      interestConfidence: 0,
       maxResultsPerKeyword: 25,
       targetCount: 10,
+      targetVideos: 20,
       videoDistance: 6,
       textSimilarity: 0.85,
     });
@@ -230,6 +229,7 @@ window.__ModuleLoader__.load({
           tokenBudget: numberInputValue(config.search?.tokenBudget ?? ''),
           dailyTokenBudget: numberInputValue(config.search?.dailyTokenBudget ?? ''),
           targetCount: numberInputValue(config.search?.targetCount ?? ''),
+          targetVideos: numberInputValue(config.search?.targetVideos ?? ''),
           queryLanguage: String(config.search?.queryLanguage || 'en'),
           contentLanguage: String(config.search?.contentLanguage || 'auto'),
           defaultProfileId: String(config.search?.defaultProfileId || ''),
@@ -238,9 +238,6 @@ window.__ModuleLoader__.load({
           threshold: Number(config.judge?.threshold ?? 60),
           modelWeight: Number(config.judge?.modelWeight ?? 0.6),
           prefilter: String(config.judge?.prefilter || 'off'),
-          coverPrefilter: config.judge?.coverPrefilter === true,
-      textPrefilter: config.judge?.textPrefilter === true,
-          sellingPoints: config.judge?.sellingPoints === true,
         },
         dedup: {
           enabled: config.dedup?.enabled === true,
@@ -286,23 +283,6 @@ window.__ModuleLoader__.load({
       };
     }
 
-    function interestDraftFrom(profile) {
-      if (!profile?.id) return null;
-      return {
-        id: profile.id,
-        name: profile.name || '',
-        summary: profile.summary || '',
-        confidence: Number(profile.confidence) || 0,
-        interests: toLines(profile.interests),
-        creators: toLines(profile.creators),
-        visualThemes: toLines(profile.visualThemes),
-        languages: toLines(profile.languages),
-        positiveSeeds: toLines(profile.positiveSeeds),
-        negativeKeywords: toLines(profile.negativeKeywords),
-        searchDirections: toLines(profile.searchDirections),
-      };
-    }
-
     const LANGUAGES = [
       ['auto', '自动（只记录）'],
       ['en', '英语'], ['es', '西班牙语'], ['pt', '葡萄牙语'], ['id', '印尼语'], ['ja', '日语'],
@@ -322,20 +302,18 @@ window.__ModuleLoader__.load({
       const [diagnostics, setDiagnostics] = useState(null);
       const [uploadStatus, setUploadStatus] = useState(null);
       const [materialDraft, setMaterialDraft] = useState(null);
-      const [interestDraft, setInterestDraft] = useState(null);
       const [materialForm, setMaterialForm] = useState({ profileId: '', name: '', threshold: '' });
-      const [interestForm, setInterestForm] = useState({ id: '', name: '' });
       const [uploadProfileId, setUploadProfileId] = useState('');
       const [purgeConfirm, setPurgeConfirm] = useState(false);
+      const [profileDeleteConfirm, setProfileDeleteConfirm] = useState(null);
       const [seeds, setSeeds] = useState('');
       const [exclude, setExclude] = useState('');
       const [candidates, setCandidates] = useState(null);
-      const [candidateFilter, setCandidateFilter] = useState({ status: 'all', query: '', sinceDays: 0, minScore: 0, videoId: '', page: 0, reload: 0 });
+      const [candidateFilter, setCandidateFilter] = useState({ status: 'all', query: '', sinceDays: 0, date: '', minScore: 0, videoId: '', page: 0, reload: 0 });
       const [candidateBusy, setCandidateBusy] = useState(false);
       const [candidateError, setCandidateError] = useState('');
       const [uploadPolarity, setUploadPolarity] = useState('positive');
       const [materialHistory, setMaterialHistory] = useState(null);
-      const [interestHistory, setInterestHistory] = useState(null);
       const [historyBusy, setHistoryBusy] = useState('');
       // 注意：新增 useState 一律追加在最后，避免打乱既有索引（测试按位置注入草稿）。
       const [exportResult, setExportResult] = useState(null);
@@ -351,6 +329,12 @@ window.__ModuleLoader__.load({
       const [candidateStatuses, setCandidateStatuses] = useState([]);
       // 系统代理探测结果（「检测系统代理」按钮写入，null 表示尚未检测）。
       const [systemProxy, setSystemProxy] = useState(null);
+      // 样例子库的文件夹导航：null = 画像文件夹列表（根）；否则为进入的画像 id（'unassigned' 表示未归属）。
+      const [sampleFolder, setSampleFolder] = useState(null);
+      // 进入画像文件夹后选中的子文件夹极性：'positive' | 'negative'（null 表示还停在正/反样例选择层）。
+      const [sampleFolderPolarity, setSampleFolderPolarity] = useState(null);
+      // 待确认删除的样例 id（非空时渲染删除确认条）。
+      const [sampleDeleteConfirm, setSampleDeleteConfirm] = useState(null);
       const initialized = useRef(false);
       const alive = useRef(true);
       // 素材列表横向滚动：容器与底部代理滚动条双向同步，保证滚动条不必翻到页面底部才可见。
@@ -415,7 +399,7 @@ window.__ModuleLoader__.load({
       // videoId 精确检索、切片分页。这样即使宿主进程还跑着旧的服务端代码（忽略 videoId、
       // 不做自动隐藏），界面行为也保持一致。
       // videoId 与页码都不进 candidateKey：输入、检索、翻页都只重新派生，不重复请求整库。
-      const candidateKey = `${candidateFilter.status}|${candidateFilter.query}|${candidateFilter.sinceDays}|${candidateFilter.minScore}|${candidateFilter.reload}`;
+      const candidateKey = `${candidateFilter.status}|${candidateFilter.query}|${candidateFilter.sinceDays}|${candidateFilter.date}|${candidateFilter.minScore}|${candidateFilter.reload}`;
       useEffect(() => {
         if (category !== '素材库') return undefined;
         let cancelled = false;
@@ -430,6 +414,7 @@ window.__ModuleLoader__.load({
               status: candidateFilter.status,
               query: candidateFilter.query,
               sinceDays: Number(candidateFilter.sinceDays) || 0,
+              date: String(candidateFilter.date || '').trim(),
               minScore: Number(candidateFilter.minScore) || 0,
               videoId: '',
               limit: CANDIDATE_FETCH_LIMIT,
@@ -463,17 +448,28 @@ window.__ModuleLoader__.load({
         const now = Date.now();
         const hideAfterMs = LIBRARY_HIDE_AFTER_DAYS * 24 * 60 * 60 * 1000;
         const wantedVideoId = String(candidateFilter.videoId || '').trim().toLowerCase();
-        // 显式放宽时间范围或按 videoId 检索时不隐藏，避免“筛选条件形同虚设”。
-        const keepOld = Boolean(wantedVideoId) || Number(candidateFilter.sinceDays) > LIBRARY_HIDE_AFTER_DAYS;
+        const wantedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(candidateFilter.date || '').trim()) ? String(candidateFilter.date).trim() : '';
+        // 显式放宽时间范围、按 videoId 检索或按日期筛选时不隐藏，避免“筛选条件形同虚设”。
+        const keepOld = Boolean(wantedVideoId) || Boolean(wantedDate) || Number(candidateFilter.sinceDays) > LIBRARY_HIDE_AFTER_DAYS;
         const visible = keepOld
           ? candidateRows
           : candidateRows.filter((row) => {
             const stamp = Date.parse(row?.collectedAt || row?.updatedAt || '');
             return !Number.isFinite(stamp) || now - stamp <= hideAfterMs;
           });
-        const matched = wantedVideoId
-          ? visible.filter((row) => String(row?.videoId || '').trim().toLowerCase() === wantedVideoId)
+        // 按「采集日期」筛单日：服务端已按同一口径过滤，这里再兜一层，兼容宿主未热更新时返回的全量数据。
+        const dated = wantedDate
+          ? visible.filter((row) => {
+            const stamp = Date.parse(row?.collectedAt || row?.updatedAt || '');
+            if (!Number.isFinite(stamp)) return false;
+            const d = new Date(stamp);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            return key === wantedDate;
+          })
           : visible;
+        const matched = wantedVideoId
+          ? dated.filter((row) => String(row?.videoId || '').trim().toLowerCase() === wantedVideoId)
+          : dated;
         const total = matched.length;
         const totalPages = Math.max(1, Math.ceil(total / CANDIDATE_PAGE_SIZE));
         const page = Math.min(candidateFilter.page, totalPages - 1);
@@ -501,7 +497,7 @@ window.__ModuleLoader__.load({
           });
           updateCandidateFilter({ page });
         }
-      }, [category, candidateRows, candidateStatuses, candidateFilter.page, candidateFilter.videoId, candidateFilter.sinceDays]);
+      }, [category, candidateRows, candidateStatuses, candidateFilter.page, candidateFilter.videoId, candidateFilter.sinceDays, candidateFilter.date]);
 
       async function perform(key, action, success = '已保存。') {
         if (busy) return null;
@@ -580,6 +576,7 @@ window.__ModuleLoader__.load({
             tokenBudget: numberInputValue(draft.search.tokenBudget),
             dailyTokenBudget: numberInputValue(draft.search.dailyTokenBudget),
             targetCount: numberInputValue(draft.search.targetCount),
+            targetVideos: numberInputValue(draft.search.targetVideos),
             queryLanguage: draft.search.queryLanguage,
             contentLanguage: draft.search.contentLanguage,
             defaultProfileId: draft.search.defaultProfileId,
@@ -587,7 +584,7 @@ window.__ModuleLoader__.load({
             seeds: parseTerms(seeds, 20),
             exclude: parseTerms(exclude, 30),
           },
-          judge: { threshold: Number(draft.judge.threshold), modelWeight: Number(draft.judge.modelWeight), prefilter: draft.judge.prefilter, coverPrefilter: Boolean(draft.judge.coverPrefilter), textPrefilter: Boolean(draft.judge.textPrefilter), sellingPoints: Boolean(draft.judge.sellingPoints) },
+          judge: { threshold: Number(draft.judge.threshold), modelWeight: Number(draft.judge.modelWeight), prefilter: draft.judge.prefilter },
           dedup: {
             enabled: Boolean(draft.dedup.enabled),
             videoDistance: numberInputValue(draft.dedup.videoDistance),
@@ -680,6 +677,26 @@ window.__ModuleLoader__.load({
         }
       }
 
+      async function deleteSample(sampleId) {
+        if (!sampleId || busy) return;
+        setBusy('sampleDelete');
+        setError('');
+        try {
+          const value = await api.request('/library/sample/delete', { sampleId }, { timeoutMs: 30_000 });
+          if (value?.ok === false) setError(value.message || '删除样例失败。');
+          else {
+            const count = Array.isArray(value?.files) ? value.files.length : 0;
+            setNotice(`已删除样例 ${sampleId}${count ? `，并清理 ${count} 个库内文件` : ''}。`);
+            setSampleDeleteConfirm(null);
+            await refresh(false);
+          }
+        } catch (failure) {
+          setError(failure.message || String(failure));
+        } finally {
+          if (alive.current) setBusy('');
+        }
+      }
+
       async function previewKeywords() {
         const value = await perform('preview', () => api.request('/keywords/expand', {
           seeds: seeds.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
@@ -701,6 +718,7 @@ window.__ModuleLoader__.load({
           exclude: exclude.split(/[\n,，;；]+/).map((item) => item.trim()).filter(Boolean),
           profileId: draft.search.defaultProfileId || null,
           maxPerRun: numberOrDefault(draft.search.maxResultsPerKeyword, INPUT_DEFAULTS.maxResultsPerKeyword),
+          targetVideos: numberOrDefault(draft.search.targetVideos, INPUT_DEFAULTS.targetVideos),
         }, { timeoutMs: 30_000 }), '采集任务已启动。');
       }
 
@@ -741,63 +759,22 @@ window.__ModuleLoader__.load({
         if (value?.ok) setMaterialDraft(materialDraftFrom(value.profile));
       }
 
-      async function buildInterest() {
-        if (!interestForm.id.trim()) {
-          setError('请先填写观看兴趣画像 ID。');
-          return;
-        }
-        const value = await perform('buildInterest', () => api.request('/profiles/interest/build', {
-          id: interestForm.id.trim(),
-          name: interestForm.name,
-          minSamples: 3,
-        }, { timeoutMs: 120_000 }), '观看兴趣画像已生成。');
-        if (value?.ok) {
-          setInterestDraft(interestDraftFrom(value.profile));
-          setInterestHistory(null);
-          setInterestForm({ id: value.profile.id, name: value.profile.name || 'TikTok 观看兴趣' });
-        }
-      }
-
-      async function saveInterest() {
-        if (!interestDraft) return;
-        const value = await perform('saveInterest', () => api.request('/profiles/interest/save', {
-          id: interestDraft.id,
-          patch: {
-            name: interestDraft.name,
-            summary: interestDraft.summary,
-            confidence: numberOrDefault(interestDraft.confidence, INPUT_DEFAULTS.interestConfidence),
-            interests: parseLines(interestDraft.interests),
-            creators: parseLines(interestDraft.creators),
-            visualThemes: parseLines(interestDraft.visualThemes),
-            languages: parseLines(interestDraft.languages),
-            positiveSeeds: parseLines(interestDraft.positiveSeeds),
-            negativeKeywords: parseLines(interestDraft.negativeKeywords),
-            searchDirections: parseLines(interestDraft.searchDirections),
-          },
-        }), '观看兴趣画像修改已保存。');
-        if (value?.ok) setInterestDraft(interestDraftFrom(value.profile));
-      }
-
       // 历史版本：只读列表 + 一键恢复；恢复接口会先把当前版本写进历史，再替换文件。
-      async function loadHistory(kind) {
-        const id = kind === 'material' ? materialDraft?.id : interestDraft?.id;
+      async function loadHistory() {
+        const id = materialDraft?.id;
         if (!id) {
           setError('先打开一个画像，再查看历史版本。');
           return;
         }
-        setHistoryBusy(kind);
+        setHistoryBusy('material');
         setError('');
         try {
-          const route = kind === 'material' ? '/profiles/material/history' : '/profiles/interest/history';
-          const value = await api.request(route, { id }, { timeoutMs: 20_000 });
+          const value = await api.request('/profiles/material/history', { id }, { timeoutMs: 20_000 });
           if (value?.ok === false) {
             setError(value.message || '读取历史版本失败。');
-            if (kind === 'material') setMaterialHistory([]);
-            else setInterestHistory([]);
-          } else if (kind === 'material') {
-            setMaterialHistory(value?.versions || []);
+            setMaterialHistory([]);
           } else {
-            setInterestHistory(value?.versions || []);
+            setMaterialHistory(value?.versions || []);
           }
         } catch (failure) {
           if (alive.current) setError(failure.message || String(failure));
@@ -806,20 +783,18 @@ window.__ModuleLoader__.load({
         }
       }
 
-      async function restoreVersion(kind, version) {
-        const id = kind === 'material' ? materialDraft?.id : interestDraft?.id;
+      async function restoreVersion(version) {
+        const id = materialDraft?.id;
         if (!id || historyBusy) return;
-        setHistoryBusy(kind);
+        setHistoryBusy('material');
         setError('');
         setNotice('');
         try {
-          const route = kind === 'material' ? '/profiles/material/restore' : '/profiles/interest/restore';
-          const value = await api.request(route, { id, version }, { timeoutMs: 20_000 });
+          const value = await api.request('/profiles/material/restore', { id, version }, { timeoutMs: 20_000 });
           if (value?.ok === false) {
             setError(value.message || '恢复失败。');
           } else if (value?.profile) {
-            if (kind === 'material') setMaterialDraft(materialDraftFrom(value.profile));
-            else setInterestDraft(interestDraftFrom(value.profile));
+            setMaterialDraft(materialDraftFrom(value.profile));
             setNotice(`已恢复到 ${version}；恢复前的版本也已留档。`);
             await refresh(true);
           }
@@ -828,11 +803,10 @@ window.__ModuleLoader__.load({
         } finally {
           if (alive.current) setHistoryBusy('');
         }
-        await loadHistory(kind);
+        await loadHistory();
       }
 
-      function historyPanel(kind, versions) {
-        const isMaterial = kind === 'material';
+      function historyPanel(versions) {
         const small = { ...buttonStyle, padding: '4px 8px', fontSize: 12 };
         if (versions === null) {
           return h('div', { style: row },
@@ -840,19 +814,19 @@ window.__ModuleLoader__.load({
               type: 'button',
               style: small,
               disabled: Boolean(historyBusy),
-              onClick: () => void loadHistory(kind),
-            }, historyBusy === kind ? '读取中…' : '历史版本'));
+              onClick: () => void loadHistory(),
+            }, historyBusy === 'material' ? '读取中…' : '历史版本'));
         }
         const list = Array.isArray(versions) ? versions : [];
         return h('div', { style: { ...column, gap: 8 } },
           h('div', { style: row },
             h('strong', { style: { fontSize: 13 } }, `历史版本（${list.length}）`),
-            h('button', { type: 'button', style: small, disabled: Boolean(historyBusy), onClick: () => void loadHistory(kind) },
-              historyBusy === kind ? '刷新中…' : '刷新'),
+            h('button', { type: 'button', style: small, disabled: Boolean(historyBusy), onClick: () => void loadHistory() },
+              historyBusy === 'material' ? '刷新中…' : '刷新'),
             h('button', {
               type: 'button',
               style: small,
-              onClick: () => { if (isMaterial) setMaterialHistory(null); else setInterestHistory(null); },
+              onClick: () => setMaterialHistory(null),
             }, '收起')),
           list.length === 0
             ? note('还没有历史版本；每次生成、保存或恢复前都会自动留一份，最多保留 20 个。')
@@ -867,7 +841,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 style: small,
                 disabled: Boolean(historyBusy),
-                onClick: () => void restoreVersion(kind, item.version),
+                onClick: () => void restoreVersion(item.version),
               }, '恢复')))));
       }
 
@@ -882,12 +856,32 @@ window.__ModuleLoader__.load({
         const value = await perform('purge', () => api.request('/library/purge', { confirm: true }, { timeoutMs: 120_000 }), '样例与画像已清空。');
         if (value?.ok) {
           setMaterialDraft(null);
-          setInterestDraft(null);
         }
       }
 
-      async function restoreDefaults() {
-        await perform('restoreDefaults', () => api.request('/library/restore-defaults', {}), '已恢复内置默认画像。');
+      async function deleteProfile(id) {
+        if (busy) return;
+        if (profileDeleteConfirm !== id) {
+          setProfileDeleteConfirm(id);
+          setNotice(`再次点击“确认删除”才会删除画像 ${id}；该画像名下的样例视频副本会一起删除，不可恢复。`);
+          return;
+        }
+        setProfileDeleteConfirm(null);
+        const value = await perform('deleteProfile', () => api.request('/profiles/material/delete', { id }, { timeoutMs: 60_000 }), `已删除画像 ${id}。`);
+        if (value?.ok) {
+          if (materialDraft?.id === id) {
+            setMaterialDraft(null);
+            setMaterialHistory(null);
+          }
+          if (sampleFolder === id) {
+            setSampleFolder(null);
+            setSampleFolderPolarity(null);
+            setSampleDeleteConfirm(null);
+          }
+          const removed = Number(value.removedSamples) || 0;
+          setNotice(`已删除画像 ${id}${removed ? `，连同 ${removed} 条样例视频一并删除` : ''}。`);
+          await refresh(true);
+        }
       }
 
       function updateCandidateFilter(patch) {
@@ -1040,6 +1034,7 @@ window.__ModuleLoader__.load({
             status: candidateFilter.status,
             query: candidateFilter.query,
             sinceDays: Number(candidateFilter.sinceDays) || 0,
+            date: String(candidateFilter.date || '').trim(),
           }, { timeoutMs: 60_000 });
           if (value?.ok === false) setError(value.message || '导出失败。');
           else {
@@ -1068,12 +1063,18 @@ window.__ModuleLoader__.load({
         setNotice(`videoId：${text}`);
       }
 
+      function todayKey() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+
       function field(label, value, onChange, options = {}) {
         return h('label', { style: column }, h('span', null, label), h('input', {
           type: options.type || 'text',
           value,
           min: options.min,
           max: options.max,
+          placeholder: options.placeholder,
           disabled: options.disabled,
           onChange: (event) => onChange(event.target.value),
           style: control,
@@ -1114,8 +1115,98 @@ window.__ModuleLoader__.load({
         return text ? h('p', { style: muted }, text) : null;
       }
 
+      function sampleLibraryBrowser() {
+        const library = state?.library || {};
+        const samples = Array.isArray(library.samples) ? library.samples : [];
+        const counts = library.byProfile || {};
+        const folderKeys = Object.keys(counts).filter((key) => Number(counts[key]) > 0);
+        folderKeys.sort((a, b) => (a === 'unassigned' ? 1 : 0) - (b === 'unassigned' ? 1 : 0) || a.localeCompare(b));
+        const profileLabel = (id) => {
+          if (id === 'unassigned') return '未归属';
+          const hit = profiles.find((item) => item.id === id);
+          return hit?.name || id;
+        };
+        const smallButton = (label, onClick, extra = {}) => h('button', {
+          type: 'button',
+          style: { ...buttonStyle, padding: '2px 8px', fontSize: 12, ...extra },
+          disabled: busyAny,
+          onClick,
+        }, label);
+        const crumb = (...parts) => h('div', { style: { ...row, gap: 6 } },
+          ...parts.flatMap((part, index) => (index === 0 ? [part] : [h('span', { key: `crumb-sep-${index}`, style: muted }, '/'), part])));
+        const folderRow = (label, count, onClick) => h('button', {
+          type: 'button',
+          style: { ...buttonStyle, display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', padding: '8px 10px', textAlign: 'left' },
+          disabled: busyAny,
+          onClick,
+        }, h('span', null, `📁 ${label}`), h('span', { style: muted }, `${count} 条`));
+        const backToRoot = () => {
+          setSampleFolder(null);
+          setSampleFolderPolarity(null);
+          setSampleDeleteConfirm(null);
+        };
+        const backToProfile = () => {
+          setSampleFolderPolarity(null);
+          setSampleDeleteConfirm(null);
+        };
+
+        if (sampleFolder === null) {
+          return h('div', { style: column },
+            folderKeys.length
+              ? folderKeys.map((key) => h('div', { key }, folderRow(profileLabel(key), Number(counts[key]) || 0, () => {
+                setSampleFolder(key);
+                setSampleFolderPolarity(null);
+                setSampleDeleteConfirm(null);
+              })))
+              : note('样例库还是空的，先在上面上传视频样例。'));
+        }
+
+        const current = samples.filter((sample) => (sample.profileId || 'unassigned') === sampleFolder);
+        const positive = current.filter((sample) => sample.polarity !== 'negative');
+        const negative = current.filter((sample) => sample.polarity === 'negative');
+
+        if (sampleFolderPolarity === null) {
+          return h('div', { style: column },
+            crumb(smallButton('全部画像', backToRoot), h('span', null, profileLabel(sampleFolder))),
+            folderRow('正样例', positive.length, () => {
+              setSampleFolderPolarity('positive');
+              setSampleDeleteConfirm(null);
+            }),
+            folderRow('反样例', negative.length, () => {
+              setSampleFolderPolarity('negative');
+              setSampleDeleteConfirm(null);
+            }));
+        }
+
+        const rows = sampleFolderPolarity === 'negative' ? negative : positive;
+        const polarityLabel = sampleFolderPolarity === 'negative' ? '反样例' : '正样例';
+        return h('div', { style: column },
+          crumb(smallButton('全部画像', backToRoot), smallButton(profileLabel(sampleFolder), backToProfile), h('span', null, polarityLabel)),
+          rows.length
+            ? rows.map((sample) => h('div', { key: sample.id, style: { ...card, ...column, gap: 6, padding: 10 } },
+              note(`${sample.duration ? `${sample.duration} 秒 · ` : ''}${sample.addedAt ? formatHistoryAt(sample.addedAt) : '时间未知'} · ${sample.hasFeatures ? '已完成视觉特征' : '仅基础数据'}${sample.desc ? ` · ${sample.desc}` : ''}`),
+              h('div', { style: row },
+                smallButton('打开所在文件夹', () => void revealFile(sample.file, 'library')),
+                sampleDeleteConfirm === sample.id
+                  ? h('span', { style: { ...row, gap: 6 } },
+                    h('span', { style: { ...muted, color: 'var(--dsw-alias-label-danger, #c00)' } }, '删除会连库内视频副本一起删，不可恢复。'),
+                    h('button', {
+                      type: 'button',
+                      style: { ...dangerStyle, padding: '4px 8px', fontSize: 12 },
+                      disabled: busyAny,
+                      onClick: () => void deleteSample(sample.id),
+                    }, '确认删除'),
+                    smallButton('取消', () => setSampleDeleteConfirm(null)))
+                  : h('button', {
+                    type: 'button',
+                    style: { ...dangerStyle, padding: '4px 8px', fontSize: 12 },
+                    disabled: busyAny,
+                    onClick: () => setSampleDeleteConfirm(sample.id),
+                  }, '删除样例'))))
+            : note('这个文件夹里还没有样例。'));
+      }
+
       const profiles = state?.profiles || [];
-      const interestProfiles = state?.interestProfiles?.profiles || [];
       const runState = state?.run || { status: 'idle' };
       const tokenState = runState.budget || null;
       const dailyBudget = state?.dailyBudget || null;
@@ -1158,7 +1249,7 @@ window.__ModuleLoader__.load({
 
       function materialEditor() {
         if (!materialDraft) {
-          return note('生成成功后，这里会出现可编辑的素材筛选画像描述；也可以从下方“现有画像”点“编辑”载入。');
+          return null;
         }
         const current = profiles.find((item) => item.id === materialDraft.id);
         return h('div', { style: { ...card, ...column } },
@@ -1183,40 +1274,9 @@ window.__ModuleLoader__.load({
                 const source = profiles.find((item) => item.id === materialDraft.id);
                 if (source) setMaterialDraft(materialDraftFrom(source));
               },
-            }, '重置为当前文件')),
-          historyPanel('material', materialHistory));
-      }
-
-      function interestEditor() {
-        if (!interestDraft) {
-          return note('生成成功后，这里会出现可编辑的观看兴趣画像描述；也可以从下方“现有画像”点“编辑”载入。');
-        }
-        return h('div', { style: { ...card, ...column } },
-          h('div', { style: row }, note(`画像 ID：${interestDraft.id}（只读）`)),
-          h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 120px', gap: 10 } },
-            field('画像名称', interestDraft.name, (value) => setInterestDraft((old) => ({ ...old, name: value }))),
-            field('置信度', interestDraft.confidence, (value) => setInterestDraft((old) => ({ ...old, confidence: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
-          area('画像描述（观看兴趣总结）', interestDraft.summary, (value) => setInterestDraft((old) => ({ ...old, summary: value })), 5, '总结这类观众喜欢什么、为什么会被吸引'),
-          area('推荐搜索种子词，每行一个', interestDraft.positiveSeeds, (value) => setInterestDraft((old) => ({ ...old, positiveSeeds: value })), 4),
-          area('应排除关键词，每行一个', interestDraft.negativeKeywords, (value) => setInterestDraft((old) => ({ ...old, negativeKeywords: value })), 2),
-          h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-            area('兴趣主题，每行一个', interestDraft.interests, (value) => setInterestDraft((old) => ({ ...old, interests: value })), 2),
-            area('创作者类型，每行一个', interestDraft.creators, (value) => setInterestDraft((old) => ({ ...old, creators: value })), 2),
-            area('视觉主题，每行一个', interestDraft.visualThemes, (value) => setInterestDraft((old) => ({ ...old, visualThemes: value })), 2),
-            area('语言代码，每行一个', interestDraft.languages, (value) => setInterestDraft((old) => ({ ...old, languages: value })), 2),
-            area('后续扩展方向，每行一个', interestDraft.searchDirections, (value) => setInterestDraft((old) => ({ ...old, searchDirections: value })), 2)),
-          h('div', { style: row },
-            h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveInterest() }, busy === 'saveInterest' ? '保存中…' : '保存兴趣画像修改'),
-            h('button', {
-              type: 'button',
-              style: buttonStyle,
-              disabled: busyAny,
-              onClick: () => {
-                const source = interestProfiles.find((item) => item.id === interestDraft.id);
-                if (source) setInterestDraft(interestDraftFrom(source));
-              },
-            }, '重置为当前文件')),
-          historyPanel('interest', interestHistory));
+            }, '重置为当前文件'),
+            h('button', { type: 'button', style: buttonStyle, onClick: () => { setMaterialDraft(null); setMaterialHistory(null); } }, '收起')),
+          historyPanel(materialHistory));
       }
 
       function statusBadge(status) {
@@ -1227,6 +1287,7 @@ window.__ModuleLoader__.load({
           extract_failed: ['#fff3e0', '#a3560a'],
           rejected: ['#fdeaea', '#a11b1b'],
           skipped_language: ['#f3e9ff', '#6b2fb3'],
+          skipped_aspect: ['#fdeef3', '#a3285c'],
           duplicate: ['#eef2f7', '#3c4a5c'],
         };
         const [background, color] = palette[status] || ['#f0f0f0', '#555'];
@@ -1376,7 +1437,7 @@ window.__ModuleLoader__.load({
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
               select('文本模型（可选）', draft.model.textModel, [['', ''], ...modelSelectOptions(draft.model.textModel)], (value) => setDraft((old) => patchAt(old, ['model', 'textModel'], value))),
               select('视觉模型（可选）', draft.model.visionModel, [['', ''], ...modelSelectOptions(draft.model.visionModel)], (value) => setDraft((old) => patchAt(old, ['model', 'visionModel'], value)))),
-            note('文本模型用于文本预筛和卖点提取，视觉模型用于抽帧判定。对应栏留空表示不单独覆盖模型；选“默认模型”时使用宿主新开对话默认选择的模型，文本/视觉模型可选其他提供商的模型（列表项为 提供商/模型名，运行时按所选提供商路由）；DSH 来源同样按前缀路由，自定义 OpenAI 接口则原样发送模型 ID（可包含 /）。实际路由可在“自检与用量”查看。密钥保存后不回显，空白保存不会覆盖已保存密钥；修改模型不会中断正在运行的任务。')),
+            note('文本模型用于关键词扩展等文本任务，视觉模型用于抽帧判定。')),
           section('运行环境',
             h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
               select('代理模式', draft.proxy.mode, [['auto', '自动（按已填代理判断）'], ['system', '跟随系统代理（推荐）'], ['manual', '手动填写代理地址']], (value) => setDraft((old) => patchAt(old, ['proxy', 'mode'], value))),
@@ -1403,35 +1464,25 @@ window.__ModuleLoader__.load({
             note(`代理池 ${state?.proxyPool?.size || 0} 个 · 可用 ${state?.proxyPool?.available || 0} · 冷却 ${state?.proxyPool?.cooling || 0}（连续失败 ${state?.proxyPool?.failureThreshold || 2} 次冷却 ${Math.round((state?.proxyPool?.cooldownMs || 600000) / 60000)} 分钟）${(state?.proxyPool?.ignored || []).length ? ` · 已忽略 ${state.proxyPool.ignored.length} 个非法地址` : ''}`),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !(state?.proxyPool?.size > 0), onClick: () => void perform('proxyReset', () => api.request('/proxy/pool/reset', {}), '代理冷却已重置。') }, busy === 'proxyReset' ? '重置中…' : '重置代理冷却')),
-            note('代理池只用来换出口；不代登录、不切 profile 内容。多账号请用不同的 browser.profileDir（配置文件里手填），登录仍需在 Edge 窗口里手动完成。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 } },
               field('视频归档目录', draft.downloadsDir, (value) => setDraft((old) => patchAt(old, ['downloadsDir'], value))),
               field('CDP 端口', draft.port, (value) => setDraft((old) => patchAt(old, ['port'], numberInputValue(value))), { type: 'number', min: 1024, max: 65535 })),
             field('被拒素材目录（留空 = 直接删除）', draft.rejectedDir, (value) => setDraft((old) => patchAt(old, ['rejectedDir'], value))),
-            note('填了就按日期平铺存到 <目录>\\<YYYY-MM-DD>\\<videoId>.mp4 + .json，判定为 reject 时自动搬过去；留空则维持旧的直接删除行为。'),
-            note('归档目录留空时使用默认 downloads 目录，保存后立即生效；CDP 端口留空时使用 9333，在下次启动 Edge 时生效。'),
             h('div', { style: row }, h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveBasic() }, busy === 'saveBasic' ? '保存中…' : '保存基础设置')))),
 
         category === '样例与画像' && h('div', { style: column },
           section('上传视频样例',
-            note('支持 mp4/mov/webm/mkv，单个不超过 500MB；上传后自动抽帧并由视觉模型描述。正样例用于筛选画像，反样例可在同一素材库中单独标注。'),
+            note('支持 mp4/mov/webm/mkv，单个不超过 500MB；上传后自动抽帧并由视觉模型描述。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
               select('样例归属画像', draft.search.defaultProfileId, [['', '未指定'], ...profiles.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => patchAt(old, ['search', 'defaultProfileId'], value))),
               field('新画像 ID（可选）', uploadProfileId, setUploadProfileId)),
+            note('填写“新画像 ID”时，本次上传直接归入该画像；留空则用左侧选择。'),
+            note('归属与 ID 都留空时，记为“未归属样例”，未归属样例可在生成素材筛选画像时自动归入。'),
             h('label', { style: column }, '选择视频文件', h('input', { type: 'file', accept: 'video/mp4,video/quicktime,video/webm,video/x-matroska', multiple: true, disabled: busyAny, onChange: (event) => void uploadSamples(Array.from(event.target.files || [])) })),
-            toggle('作为反样例（“不想要的素材”，只用于生成 mustNot，不计入关键词统计）', uploadPolarity === 'negative', (checked) => setUploadPolarity(checked ? 'negative' : 'positive')),
-            note('填写“新画像 ID”时，本次上传直接归入该画像；留空则用左侧选择。未归属样例可在生成素材筛选画像时自动归入。'),
+            toggle('作为反样例', uploadPolarity === 'negative', (checked) => setUploadPolarity(checked ? 'negative' : 'positive')),
             uploadStatus && note(`上传 ${uploadStatus.current}/${uploadStatus.total}${uploadStatus.name ? ` · 当前 ${uploadStatus.name}` : ''}`),
             ...(uploadStatus?.errors || []).map((item) => h('p', { key: item, style: { ...muted, color: 'var(--dsw-alias-label-danger, #c00)' } }, item)),
-            note(`样例库现有 ${state?.library?.count || 0} 条：正样例 ${state?.library?.positiveCount ?? state?.library?.count ?? 0} · 反样例 ${state?.library?.negativeCount ?? 0}（未归属 ${state?.library?.unassigned ?? 0} 条）`),
-            ...(state?.library?.samples || []).slice(0, 12).map((sample) => h('div', { key: sample.id, style: { ...row, justifyContent: 'space-between' } },
-              note(`${sample.polarity === 'negative' ? '［反］' : '［正］'} ${sample.id} · ${sample.duration || '?'} 秒 · ${sample.hasFeatures ? '已完成视觉特征' : '仅基础数据'}${sample.profileId ? ` · ${sample.profileId}` : ' · 未归属'}${sample.desc ? ` · ${sample.desc}` : ''}`),
-              h('button', {
-                type: 'button',
-                style: { ...buttonStyle, padding: '4px 8px', fontSize: 12 },
-                disabled: busyAny,
-                onClick: () => void togglePolarity(sample.id, sample.polarity === 'negative' ? 'positive' : 'negative'),
-              }, sample.polarity === 'negative' ? '设为正样例' : '设为反样例')))),
+            sampleLibraryBrowser()),
           section('生成素材筛选画像',
             h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 120px', gap: 10 } },
               field('画像 ID', materialForm.profileId, (value) => setMaterialForm((old) => ({ ...old, profileId: value }))),
@@ -1439,82 +1490,57 @@ window.__ModuleLoader__.load({
               field('阈值', materialForm.threshold, (value) => setMaterialForm((old) => ({ ...old, threshold: numberInputValue(value) })), { type: 'number', min: 0, max: 100 })),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void buildMaterial() }, busy === 'buildMaterial' ? '生成中…' : '生成素材筛选画像')),
-            note('至少 3 条正样例（反样例不计入）。当前 ID 正样例不足时，会自动把“未归属”样例归入该 ID；不会把其他画像的样例混进来。'),
-            note(`未归属样例 ${state?.library?.unassigned ?? 0} 条 · 现有素材筛选画像 ${profiles.length} 张`),
+            note('至少 3 条正样例（反样例不计入）。当前 ID 正样例不足时，会自动把“未归属”样例归入该 ID。'),
             materialEditor()),
-          section('生成观看兴趣画像',
-            h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-              field('画像 ID', interestForm.id, (value) => setInterestForm((old) => ({ ...old, id: value }))),
-              field('画像名称', interestForm.name, (value) => setInterestForm((old) => ({ ...old, name: value })))),
-            h('div', { style: row },
-              h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void buildInterest() }, busy === 'buildInterest' ? '生成中…' : '生成观看兴趣画像')),
-            note('使用全部样例生成观看偏好，单独保存，不参与素材打分，也不占用素材筛选画像的样例归属。'),
-            interestEditor()),
           section('现有画像',
-            note(state?.library?.defaultsHidden ? '内置默认画像已隐藏。' : '内置默认画像可见。'),
             note(`素材筛选画像 ${profiles.length} 张`),
             state?.feedback?.pendingRebuild > 0 && note(`有 ${state.feedback.pendingRebuild} 条回流样例在画像最近一次更新之后，点“生成素材筛选画像”重建后才会生效。`),
             ...profiles.map((item) => h('div', { key: `material-${item.id}`, style: { ...row, justifyContent: 'space-between' } },
               note(`${item.id} · ${item.name} · 阈值 ${item.threshold} · 正样例 ${item.sampleCount || 0}${item.negativeCount ? ` · 反样例 ${item.negativeCount}` : ''}${item.generated ? '' : ' · 内置/配置画像（只读）'}`),
-              item.generated && h('button', {
-                type: 'button',
-                style: buttonStyle,
-                onClick: () => {
-                  setMaterialDraft(materialDraftFrom(item));
-                  setMaterialHistory(null);
-                  setMaterialForm({ profileId: item.id, name: item.name || '', threshold: Number(item.threshold) || 60 });
-                  setNotice(`已载入素材筛选画像 ${item.id}，可在上方修改后保存。`);
-                },
-              }, '编辑'))),
-            note(`观看兴趣画像 ${interestProfiles.length} 张`),
-            ...interestProfiles.map((item) => h('div', { key: `interest-${item.id}`, style: { ...row, justifyContent: 'space-between' } },
-              note(`${item.id} · ${item.name} · 置信度 ${item.confidence || 0} · ${item.summary || ''}`),
-              h('button', {
-                type: 'button',
-                style: buttonStyle,
-                onClick: () => {
-                  setInterestDraft(interestDraftFrom(item));
-                  setInterestHistory(null);
-                  setInterestForm({ id: item.id, name: item.name || '' });
-                  setNotice(`已载入观看兴趣画像 ${item.id}，可在上方修改后保存。`);
-                },
-              }, '编辑')))),
+              h('div', { style: { ...row, gap: 6 } },
+                item.generated && h('button', {
+                  type: 'button',
+                  style: buttonStyle,
+                  onClick: () => {
+                    setMaterialDraft(materialDraftFrom(item));
+                    setMaterialHistory(null);
+                    setMaterialForm({ profileId: item.id, name: item.name || '', threshold: Number(item.threshold) || 60 });
+                    setNotice(`已载入素材筛选画像 ${item.id}，可在上方修改后保存。`);
+                  },
+                }, '编辑'),
+                item.generated && (profileDeleteConfirm === item.id
+                  ? h('div', { style: { ...row, gap: 6 } },
+                    h('span', { style: { color: '#f87171', fontSize: 12 } }, '删除会连该画像的样例视频一起删，不可恢复。'),
+                    h('button', { type: 'button', style: dangerStyle, disabled: busyAny, onClick: () => void deleteProfile(item.id) }, '确认删除'),
+                    h('button', { type: 'button', style: buttonStyle, onClick: () => setProfileDeleteConfirm(null) }, '取消'))
+                  : h('button', { type: 'button', style: dangerStyle, disabled: busyAny, onClick: () => void deleteProfile(item.id) }, '删除')))))),
           section('重置样例与画像',
             note(`将删除全部 ${state?.library?.count || 0} 条样例（含样例库里的视频副本，约 ${Math.round(((state?.library?.samples || []).reduce((sum, item) => sum + (Number(item.bytes) || 0), 0)) / 1024 / 1024)} MB）和全部画像。删除前会把索引与画像 JSON 备份到 library/backups，视频副本不重复备份。`),
             h('div', { style: row },
-              h('button', { type: 'button', style: purgeConfirm ? dangerStyle : buttonStyle, disabled: busyAny || ((state?.library?.count || 0) === 0 && profiles.length + interestProfiles.length === 0), onClick: () => void purgeLibrary() }, busy === 'purge' ? '清空中…' : purgeConfirm ? '确认清空（不可恢复）' : '清空全部样例与画像'),
-              purgeConfirm && h('button', { type: 'button', style: buttonStyle, onClick: () => { setPurgeConfirm(false); setNotice('已取消清空。'); } }, '取消'),
-              state?.library?.defaultsHidden && h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void restoreDefaults() }, busy === 'restoreDefaults' ? '恢复中…' : '恢复内置默认画像')))),
+              h('button', { type: 'button', style: purgeConfirm ? dangerStyle : buttonStyle, disabled: busyAny || ((state?.library?.count || 0) === 0 && profiles.length === 0), onClick: () => void purgeLibrary() }, busy === 'purge' ? '清空中…' : purgeConfirm ? '确认清空（不可恢复）' : '清空全部样例与画像'),
+              purgeConfirm && h('button', { type: 'button', style: buttonStyle, onClick: () => { setPurgeConfirm(false); setNotice('已取消清空。'); } }, '取消')))),
 
         category === '视频观看' && h('div', { style: column },
           h('div', { style: row },
-            h('button', { type: 'button', style: primaryStyle, disabled: busyAny || runState.running || dailyExhausted, onClick: () => void startRun() }, busy === 'startRun' ? '启动中…' : '开始采集')),
+            h('button', { type: 'button', style: primaryStyle, disabled: busyAny || runState.running || dailyExhausted, onClick: () => void startRun() }, busy === 'startRun' ? '启动中…' : '开始采集'),
+            h('div', { style: { width: 150 } }, field('本次采集数量', draft.search.targetVideos, (value) => setDraft((old) => patchAt(old, ['search', 'targetVideos'], numberInputValue(value))), { type: 'number', min: 1, max: 200, placeholder: 'max：200' }))),
           runState.running || progressTarget > 0
             ? note(progressTarget > 0
-              ? `已采集 ${progressFound} / ${progressTarget} 个视频${progressTotal > 0 ? ` · 关键词 ${progressIndex}/${progressTotal}` : ''}${runState.running ? ' · 采集中' : ' · 上次采集'}`
+              ? `已成功采集 ${progressFound} / ${progressTarget} 个视频${progressTotal > 0 ? ` · 关键词 ${progressIndex}/${progressTotal}` : ''}${runState.running ? ' · 采集中' : ' · 上次采集'}`
               : '采集任务已启动，正在扩展关键词，进度稍后出现…')
             : note('开始采集会先自动保存当前搜索设置，再按下方种子词与画像启动；只改设置时用下方的「保存」。'),
           section('搜索任务',
             area('目标种子词，每行一个', seeds, setSeeds, 4),
             area('排除词，每行一个（可选）', exclude, setExclude, 2),
-            h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 } },
+            h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 } },
               select('搜索指令语言', draft.search.queryLanguage, LANGUAGES, (value) => setDraft((old) => patchAt(old, ['search', 'queryLanguage'], value))),
               select('目标视频语言', draft.search.contentLanguage, LANGUAGES, (value) => setDraft((old) => patchAt(old, ['search', 'contentLanguage'], value))),
-              field('AI 扩展数量', draft.search.targetCount, (value) => setDraft((old) => patchAt(old, ['search', 'targetCount'], numberInputValue(value))), { type: 'number', min: 3, max: 30 }),
-              field('每词采集条数', draft.search.maxResultsPerKeyword, (value) => setDraft((old) => patchAt(old, ['search', 'maxResultsPerKeyword'], numberInputValue(value))), { type: 'number', min: 1, max: 200 })),
+              field('AI 扩展数量', draft.search.targetCount, (value) => setDraft((old) => patchAt(old, ['search', 'targetCount'], numberInputValue(value))), { type: 'number', min: 0, max: 30 })),
             select('判定画像', draft.search.defaultProfileId, [['', '使用默认画像'], ...profiles.map((item) => [item.id, item.name || item.id])], (value) => setDraft((old) => patchAt(old, ['search', 'defaultProfileId'], value))),
             select('低成本预筛', draft.judge.prefilter, [['off', '关闭（每条都抽帧 + 调模型）'], ['rule', '规则预筛（低分/命中 mustNot 不抽帧、不调模型）']], (value) => setDraft((old) => patchAt(old, ['judge', 'prefilter'], value))),
             draft.judge.prefilter === 'rule'
-              ? note(`规则预筛已开启：规则分低于「阈值 − 20」或命中 mustNot 的素材直接拒绝，不抽帧、不调模型；每次跳过按约 600 token 估算节省量，记在日报。关闭后行为与旧版完全一致。阈值当前取画像阈值或 judge.threshold。`)
+              ? note('规则预筛已开启：规则分低于「阈值 − 20」或命中 mustNot 的素材直接拒绝，不抽帧、不调模型。')
               : note('预筛关闭：每条候选都会抽 3 帧并调用视觉模型。开启“规则预筛”可让明显不合格的素材零成本被拒。'),
-            toggle('封面粗筛（先 1 张封面，抓不到就回退 3 帧）', draft.judge.coverPrefilter, (value) => setDraft((old) => patchAt(old, ['judge', 'coverPrefilter'], value))),
-            draft.judge.coverPrefilter
-              ? note('封面粗筛已开启：判定阶段先在当前页面抓作品封面（不额外下载视频），只发 1 张图给视觉模型；分数低于「阈值 − 10」直接拒绝，不再抽帧。抓取失败或模型分缺失时自动回退正式 3 帧判定，不会误杀。')
-              : note('封面粗筛关闭：判定阶段直接抽 3 帧调视觉模型。开启后大部分不合格素材只需 1 次封面调用。'),
-            toggle('文本预筛（先看文案/话题，低分直接拒绝）', draft.judge.textPrefilter, (value) => setDraft((old) => patchAt(old, ['judge', 'textPrefilter'], value))),
-            draft.judge.textPrefilter
-              ? note('文本预筛已开启：判定前把文案与话题发给文本模型打一个保守分（画面未知，拿不准给中间分）；低于「阈值 − 20」直接拒绝，不抓封面、不抽帧、不调视觉模型。没有文案、没有接入模型网关或文本调用失败时自动放行到正式判定，不会误杀。')
-              : note('文本预筛关闭：判定直接进入视觉流程（开了封面粗筛就先抓封面）。开启后文字明显不符的素材可省掉一次视觉调用。'),
             toggle('素材去重（同素材换标题/重发不重复归档）', draft.dedup.enabled, (value) => setDraft((old) => patchAt(old, ['dedup', 'enabled'], value))),
             draft.dedup.enabled
               ? note(`素材去重已开启：下载前先比文案（token 集 Jaccard ≥ 0.95 直接跳过），下载后再比 8 帧画面指纹（汉明 ≤ ${numberOrDefault(draft.dedup.videoDistance, INPUT_DEFAULTS.videoDistance)} 判重，文案 ≥ ${numberOrDefault(draft.dedup.textSimilarity, INPUT_DEFAULTS.textSimilarity)} 且汉明 ≤ 12 也判重）；命中记为“重复”，不归档、不调模型。`)
@@ -1523,31 +1549,25 @@ window.__ModuleLoader__.load({
               field('画面判重汉明距离上限（0-64）', draft.dedup.videoDistance, (value) => setDraft((old) => patchAt(old, ['dedup', 'videoDistance'], numberInputValue(value))), { type: 'number', min: 0, max: 64 }),
               field('文案判重相似度（0-1）', draft.dedup.textSimilarity, (value) => setDraft((old) => patchAt(old, ['dedup', 'textSimilarity'], numberInputValue(value))), { type: 'number', min: 0, max: 1 })),
             note(`已索引素材 ${state?.dedup?.indexed ?? 0} 条${state?.dedup?.enabled ? '' : '（去重关闭时不读索引）'}。`),
-            toggle('画面文字 + 卖点（判定时顺带提取）', draft.judge.sellingPoints, (value) => setDraft((old) => patchAt(old, ['judge', 'sellingPoints'], value))),
-            draft.judge.sellingPoints
-              ? note('已开启：视觉判定时让模型逐字抄写画面文字（存 candidate.onScreenText），再用文本模型抽 ≤3 条卖点（存 candidate.sellingPoints，单条约 800 token）。卖点抽取失败只记 sellingNote，不影响判定分数。')
-              : note('已关闭：判定只出分数与理由，不额外抄画面文字、不抽卖点（每次判定省约 800 token）。'),
             draft.search.contentLanguage === 'auto'
-              ? note('目标视频语言为“自动”时只记录检测结果，不拦截下载与判定。选定具体语言后，文案语言明显不符的素材会标为“语言不符”，不下载、不判定，省流量与 token。')
-              : note('选定具体语言后，文案语言明显不符（置信度 ≥ 60%）的素材会标为“语言不符”，不下载、不判定；文案太短或判断不确定时照常放行。'),
+              && note('目标视频语言为“自动”时只记录检测结果，不拦截下载与判定。选定具体语言后，文案语言明显不符的素材会标为“语言不符”，不下载、不判定，省流量与 token。'),
             profiles.length === 0 && note('当前没有可用画像。请先在“样例与画像”生成素材筛选画像，否则采集会被拒绝。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 } },
               field('本次任务 token 上限', draft.search.tokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'tokenBudget'], numberInputValue(value))), { type: 'number', min: 1 }),
               field('每日 token 上限（0 = 不限）', draft.search.dailyTokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'dailyTokenBudget'], numberInputValue(value))), { type: 'number', min: 0 })),
-            note('数值项留空时使用原默认值。本次上限覆盖种子扩展、语言相关模型请求与素材判定；每日上限跨任务累计，只算账本里已结算的 token，次日自动归零。'),
             dailyBudget && note(`今日 ${dailyBudget.dateKey || ''}：已用 ${dailyBudget.usedToday || 0}${dailyBudget.enabled ? ` / 上限 ${dailyBudget.dailyLimit || 0} / 剩余 ${dailyBudget.remaining || 0}` : ' · 每日上限未启用'}${dailyBudget.estimatedTokens ? `（其中估算 ${dailyBudget.estimatedTokens}）` : ''}`),
             dailyExhausted && h('p', { role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #c00)' } }, '今日 token 预算已用完：调大每日上限或等到明天，否则任务会被直接拒绝。'),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || runState.running, onClick: () => void previewKeywords() }, busy === 'preview' ? '扩展中…' : 'AI 扩展预览'),
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void saveSearch() }, busy === 'saveSearch' ? '保存中…' : '保存'),
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !runState.running, onClick: () => void perform('stopRun', () => api.request('/run/stop', {}), '已请求停止任务。') }, '停止')),
-            preview && h('div', { style: card }, note(`模型 ${preview.model || ''} · 新增 ${preview.count || 0} 个扩展词`), h('div', { style: row }, ...(preview.keywords || []).map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))), preview.budget && note(`本次预算已用 ${preview.budget.used || 0} / ${preview.budget.limit || 0}`))),
+            preview && h('div', { style: card }, note(preview.skipped ? 'AI 扩展数量为 0，未调用模型，仅使用种子词。' : `模型 ${preview.model || ''} · 新增 ${preview.count || 0} 个扩展词`), h('div', { style: row }, ...(preview.skipped ? (preview.seeds || []) : (preview.keywords || [])).map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))), preview.budget && note(`本次预算已用 ${preview.budget.used || 0} / ${preview.budget.limit || 0}`))),
           section('任务状态',
             note(`状态 ${runState.status || 'idle'} · 阶段 ${runState.phase || '-'}${runState.startedAt ? ` · 开始 ${new Date(runState.startedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}`),
             runState.error && h('p', { role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #c00)' } }, `${runState.error.code || ''} ${runState.error.message || ''}`),
             tokenState && note(`Token ${tokenState.used || 0} / ${tokenState.limit || 0} · 预留 ${tokenState.reserved || 0} · 剩余 ${tokenState.remaining || 0}${tokenState.estimated ? ` · 估算 ${tokenState.estimated}` : ''}`),
             (runState.keywords || []).length > 0 && h('div', { style: row }, ...runState.keywords.map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))),
-            runState.result?.result && note(`命中 ${runState.result.result.totals?.found || 0} · 新增 ${runState.result.result.totals?.extracted || 0} · 通过 ${runState.result.result.totals?.accepted || 0} · 拒绝 ${runState.result.result.totals?.rejected || 0}`))),
+            runState.result?.result && note(`命中 ${runState.result.result.totals?.found || 0} · 新增 ${runState.result.result.totals?.extracted || 0} · 通过 ${runState.result.result.totals?.accepted || 0} · 拒绝 ${runState.result.result.totals?.rejected || 0} · 成功 ${runState.result.result.totals?.succeeded || 0}`))),
 
         category === '下载与归档' && h('div', { style: column },
           section('归档目录',
@@ -1559,7 +1579,7 @@ window.__ModuleLoader__.load({
           section('下载通道',
             toggle('优先无水印（playAddr，默认开）', draft.download.preferNoWatermark, (value) => setDraft((old) => patchAt(old, ['download', 'preferNoWatermark'], value))),
             draft.download.preferNoWatermark
-              ? note('已开启：优先用播放流 playAddr（无水印）。实测同一作品与官方下载地址时长/分辨率/音轨完全一致，只少了 "♪ TikTok @作者" 浮层；playAddr 失败时才退到 downloadAddr，并在候选上标“带水印”。')
+              ? note('已开启：优先用播放流 playAddr（无水印）。')
               : note('已关闭：使用官方 downloadAddr，画面带 "♪ TikTok @作者" 水印（更稳但不可直接用）。'),
             select('默认通道', draft.download.channel, [
               ['page', '页面上下文下载（稳定，兼容旧行为）'],
@@ -1581,10 +1601,29 @@ window.__ModuleLoader__.load({
 
         category === '素材库' && h('div', { style: column },
           section('候选素材',
-            h('div', { style: { display: 'grid', gridTemplateColumns: '150px 1fr 150px 130px', gap: 10 } },
+            h('div', { style: { display: 'grid', gridTemplateColumns: '150px 1fr 130px', gap: 10, alignItems: 'end' } },
               select('状态筛选', candidateFilter.status, [['all', '全部状态'], ...(candidates?.statuses || []).map((item) => [item, CANDIDATE_STATUS_LABELS[item] || item])], (value) => updateCandidateFilter({ status: value, page: 0 })),
-              field('关键词 / 作者', candidateFilter.query, (value) => updateCandidateFilter({ query: value, page: 0 })),
-              select('时间范围', String(candidateFilter.sinceDays), [['0', '全部时间'], ['1', '最近 1 天'], ['3', '最近 3 天'], ['7', '最近 7 天'], ['30', '最近 30 天']], (value) => updateCandidateFilter({ sinceDays: Number(value), page: 0 })),
+              h('label', { style: column },
+                h('span', null, '采集日期'),
+                h('div', { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+                  h('input', {
+                    type: 'date',
+                    value: candidateFilter.date,
+                    max: todayKey(),
+                    style: { ...control, flex: '1 1 auto', minWidth: 0 },
+                    onChange: (event) => updateCandidateFilter({ date: event.target.value, page: 0 }),
+                  }),
+                  h('button', {
+                    type: 'button',
+                    style: { ...buttonStyle, padding: '4px 10px', fontSize: 12, whiteSpace: 'nowrap' },
+                    onClick: () => updateCandidateFilter({ date: todayKey(), page: 0 }),
+                  }, '今天'),
+                  h('button', {
+                    type: 'button',
+                    style: { ...buttonStyle, padding: '4px 10px', fontSize: 12, whiteSpace: 'nowrap' },
+                    disabled: !candidateFilter.date,
+                    onClick: () => updateCandidateFilter({ date: '', page: 0 }),
+                  }, '清除'))),
               select('人工评分', String(candidateFilter.minScore || 0), [['0', '不限分数'], ['1', '≥1 分'], ['2', '≥2 分'], ['3', '≥3 分'], ['4', '≥4 分'], ['5', '=5 分']], (value) => updateCandidateFilter({ minScore: Number(value), page: 0 }))),
             h('div', {
               style: {
@@ -1627,6 +1666,7 @@ window.__ModuleLoader__.load({
                 candidateFilter.videoId
                   ? h('span', { style: { ...muted, color: 'var(--dsw-alias-label-primary, #222)' } }, `检索 “${candidateFilter.videoId.trim()}”：命中 ${candidates?.total ?? 0} 条`)
                   : h('span', { style: muted }, `共 ${candidates?.total ?? 0} 条`),
+                candidateFilter.date && h('span', { style: muted }, `采集日期 ${candidateFilter.date}`),
                 Number(candidates?.hiddenByAge) > 0 && h('span', { style: muted }, `已自动隐藏 ${candidates.hiddenByAge} 条超过 ${LIBRARY_HIDE_AFTER_DAYS} 天的旧素材（源文件与数据都保留）`),
                 h('span', { style: muted }, `反馈 ${state?.feedback?.summary?.total || 0} 条 · 收藏 ${state?.feedback?.summary?.favorite || 0} · 已评分 ${state?.feedback?.summary?.scored || 0}${state?.feedback?.pendingRebuild ? ` · 待重建 ${state.feedback.pendingRebuild}` : ''}`))),
             h('div', { style: row },
@@ -1661,12 +1701,10 @@ window.__ModuleLoader__.load({
               },
             }, pageHint.text),
             h('div', { style: row }, ...Object.entries(candidates?.counts?.byStatus || {}).sort((a, b) => b[1] - a[1]).map(([status, count]) => h('span', { key: status, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '3px 9px' } }, `${CANDIDATE_STATUS_LABELS[status] || status} ${count}`))),
-            candidateTable(),
-            note('“文件缺失”表示候选记录里的归档路径已不存在（例如手工移动或删除），这里不会给出可点击的定位入口。')),
+            candidateTable()),
           section('评分回流（写样例库前必须手动确认）',
             note(`待重建提示：${state?.feedback?.pendingRebuild || 0} 条回流发生在画像最近一次更新之后，需要到“样例与画像”手动重建画像才会生效。`),
-            note('评分只写 state/feedback.jsonl，不动样例库。下面的按钮是显式动作：点了才会把候选复制进样例库。'),
-            toggle('回流时调用视觉模型生成描述（更准，但每条约 2400 token）', reflowDescribe, setReflowDescribe),
+            toggle('回流时调用视觉模型生成描述', reflowDescribe, setReflowDescribe),
             h('div', { style: row },
               h('button', {
                 type: 'button',
@@ -1687,7 +1725,7 @@ window.__ModuleLoader__.load({
                 },
               }, busy === 'reflow' ? '回流中…' : reflowConfirm === 'negative' ? '确认：把 ≤2 分加入负样例' : '把 ≤2 分加入负样例'),
               reflowConfirm && h('button', { type: 'button', style: buttonStyle, onClick: () => { setReflowConfirm(null); setNotice('已取消回流。'); } }, '取消')),
-            note('反样例只贡献 mustNot，不计入关键词统计；加入后需要重建画像，评分本身不会自动改画像。'))),
+            note('加入后需要重建画像，评分本身不会自动改画像。'))),
 
         category === '自检与用量' && h('div', { style: column },
           section('插件自检',
@@ -1707,15 +1745,14 @@ window.__ModuleLoader__.load({
             !state?.tokenUsage?.length && note('暂无 token 账本记录。')),
           section('重试队列',
             note(`待重试 ${retryState?.pending ?? 0} 条 · 已到点 ${retryState?.due ?? 0} 条 · 已用尽 ${retryState?.exhausted ?? 0} 条 · 已处理 ${retryState?.resolved ?? 0} 条（每条最多 ${retryState?.maxAttempts ?? 3} 次）`),
-            note('下载失败的候选会写进 state/retry-queue.jsonl：第 1 次 1s、第 2 次 2s、第 3 次 4s…封顶 30s（±20% 抖动）。超过 3 次保持“下载失败”，不再自动重试。'),
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !(retryState?.total > 0), onClick: () => void perform('retryClear', () => api.request('/retry/clear', {}), '重试队列已清空。') }, busy === 'retryClear' ? '清空中…' : '清空重试队列')),
             ...(retryState?.entries || []).slice(0, 5).map((item) => note(`${item.videoId} · 第 ${item.attempt} 次 · ${item.code || '-'} · 下次 ${item.nextRunAt ? new Date(item.nextRunAt).toLocaleString('zh-CN', { hour12: false }) : '-'}`))),
           section('运行环境',
             note(`视觉打分：${state?.model?.active?.model || '未配置'}（${state?.model?.active?.modelSource === 'dsh' ? 'DSH 模型' : state?.model?.active?.modelSource === 'openai-compatible' ? 'OpenAI 兼容接口' : '来源未知'}）`),
-            note(`文本模型：${state?.settings?.config?.model?.textModel || '未单独指定'} · ${state?.model?.active?.textPrefilter || state?.model?.active?.sellingPoints ? '已启用（文本预筛/卖点提取）' : '未启用（文本预筛与卖点提取都关着，不会调用）'}`),
+            note(`文本模型：${state?.settings?.config?.model?.textModel || '未单独指定'}`),
             note(`下载通道：${state?.download?.channel || '-'} · AIX ${aix?.ok ? `${aix.version}` : '不可用'}`),
-            note(`样例库：${state?.library?.count || 0} 条样例 · 兴趣画像 ${interestProfiles.length} 张`)))
+            note(`样例库：${state?.library?.count || 0} 条样例`)))
       );
     }
 

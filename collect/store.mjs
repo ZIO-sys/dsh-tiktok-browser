@@ -15,6 +15,8 @@ export const CANDIDATE_STATUS = Object.freeze({
   REJECTED: 'rejected',
   // P1-5：文案语言与目标语言不符，不下载、不判定，只留记录。
   SKIPPED_LANGUAGE: 'skipped_language',
+  // 画幅不符：非 9:16 竖屏（含分辨率未知），不下载、不判定，只留记录。
+  SKIPPED_ASPECT: 'skipped_aspect',
   // P2-1：与已有素材重复（画面指纹/文案高度相似），不归档、不判定。
   DUPLICATE: 'duplicate',
 });

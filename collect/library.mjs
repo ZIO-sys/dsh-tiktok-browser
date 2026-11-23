@@ -18,7 +18,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, extname, join } from 'node:path';
+import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import { extractFrames, findFfmpeg } from './frames.mjs';
 import { parseJsonReply, resolveJudgeApi } from './judge-model.mjs';
@@ -242,6 +242,119 @@ function normalizeFeatures(raw) {
   };
 }
 
+/** 截断文本，避免单条长文案把提示词撑爆。 */
+function truncateText(value, max = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** 把一条样例的特征压成一行证据，供文本模型参考。 */
+function describeSampleEvidence(sample) {
+  const features = sample.features || {};
+  const parts = [];
+  const desc = truncateText(sample.meta?.desc || sample.meta?.title || '', 160);
+  if (desc) parts.push(`文案：${desc}`);
+  const challenges = (sample.meta?.challenges || []).map((item) => truncateText(item, 40)).filter(Boolean);
+  if (challenges.length) parts.push(`话题：${challenges.slice(0, 6).join('、')}`);
+  const tags = (features.tags || []).map((tag) => truncateText(tag, 24)).filter(Boolean);
+  if (tags.length) parts.push(`视觉标签：${tags.slice(0, 8).join('、')}`);
+  if (features.subjects?.length) parts.push(`主体：${features.subjects.slice(0, 4).join('、')}`);
+  if (features.scene) parts.push(`场景：${truncateText(features.scene, 40)}`);
+  if (features.style) parts.push(`风格：${truncateText(features.style, 40)}`);
+  if (features.colors) parts.push(`颜色：${truncateText(features.colors, 40)}`);
+  if (features.camera) parts.push(`镜头：${truncateText(features.camera, 40)}`);
+  if (features.captions) parts.push(`字幕：${truncateText(features.captions, 40)}`);
+  const flags = [];
+  if (features.hasPerson) flags.push('有人物');
+  if (features.hasInteraction) flags.push('有互动');
+  if (flags.length) parts.push(`特征：${flags.join('、')}`);
+  return parts.length ? `- ${parts.join('；')}` : '';
+}
+
+/** 用文本模型把样例证据合成为画像卡字段；失败时返回 { ok: false }，调用方回退规则结果。 */
+async function synthesizeProfileFields({ profile, samples, negatives = [], gateway = null, budget = null, signal } = {}) {
+  if (!gateway || typeof gateway.chat !== 'function') {
+    return { ok: false, code: 'NO_GATEWAY', message: '未配置文本模型，跳过画像合成。' };
+  }
+  const positiveEvidence = samples.map(describeSampleEvidence).filter(Boolean).slice(0, 20).join('\n');
+  const negativeEvidence = negatives.map(describeSampleEvidence).filter(Boolean).slice(0, 10).join('\n');
+  const prompt = [
+    '你是短视频素材筛选画像专家。下面是一批正样例（用户想要的素材）和反样例（用户不想要的素材）。',
+    '请根据这些证据，为筛选画像生成：keywords（关键词，6-12 个，中文短词）、mustHave（必须包含，3-5 条，每条 4-14 字）、niceToHave（尽量包含，2-4 条）、mustNot（排除项，2-8 条，优先来自反样例）、description（画像描述，80-200 字，说明这类素材的共同特征与筛选标准）。',
+    '只输出一个 JSON 对象，不要输出任何解释，不要用 markdown 代码块；回答的第一个字符必须是 {，最后一个字符必须是 }。',
+    '',
+    `正样例证据（${samples.length} 条）：`,
+    positiveEvidence || '（无）',
+    '',
+    `反样例证据（${negatives.length} 条）：`,
+    negativeEvidence || '（无）',
+    '',
+    `规则版草稿：关键词=${(profile.keywords || []).join('、') || '无'}；必须包含=${(profile.mustHave || []).join('、') || '无'}；尽量包含=${(profile.niceToHave || []).join('、') || '无'}；排除项=${(profile.mustNot || []).join('、') || '无'}`,
+  ].join('\n');
+  let result = null;
+  try {
+    result = await gateway.chat({
+      kind: 'text',
+      messages: [{ role: 'user', content: prompt }],
+      maxTokens: 4000,
+      temperature: 0.2,
+      budget,
+      operation: 'profile_synthesize',
+      signal,
+    });
+  } catch (error) {
+    return { ok: false, code: 'MODEL_FAILED', message: String(error?.message || error) };
+  }
+  if (!result?.ok) {
+    return { ok: false, code: result?.code || 'MODEL_FAILED', message: result?.message || '模型调用失败。' };
+  }
+  let parsed = parseJsonReply(result.content);
+  if (!parsed) {
+    // 画像 JSON 没有 score 字段，parseJsonReply 的兜底分支不适用；这里从首个 { 起做括号配平后直接解析。
+    const text = String(result.content || '');
+    const start = text.indexOf('{');
+    if (start >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < text.length; i += 1) {
+        const ch = text[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === '\\') escaped = true;
+          else if (ch === '"') inString = false;
+          continue;
+        }
+        if (ch === '"') { inString = true; continue; }
+        if (ch === '{') depth += 1;
+        else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            try { parsed = JSON.parse(text.slice(start, i + 1)); } catch { parsed = null; }
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (!parsed) return { ok: false, code: 'MODEL_UNPARSABLE', message: '模型没有返回可解析的 JSON。', model: result.model || null };
+  const asList = (value, max) => (Array.isArray(value) ? value : [])
+    .map((item) => String(item || '').trim())
+    .filter((item) => item.length >= 2)
+    .slice(0, max);
+  const fields = {
+    keywords: asList(parsed.keywords, 12),
+    mustHave: asList(parsed.mustHave, 6),
+    niceToHave: asList(parsed.niceToHave, 6),
+    mustNot: asList(parsed.mustNot, 8),
+    description: String(parsed.description || parsed.guidance || '').trim(),
+  };
+  if (!fields.keywords.length && !fields.mustHave.length && !fields.description) {
+    return { ok: false, code: 'MODEL_UNPARSABLE', message: '模型返回的 JSON 缺少可用字段。', model: result.model || null };
+  }
+  return { ok: true, fields, model: result.model || null };
+}
+
 /**
  * 样例库。
  */
@@ -434,13 +547,94 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
     return { ok: true, sample: record, featureError };
   }
 
-  function removeSample({ sampleId }) {
+  /**
+   * 删除一条样例：索引、sidecar 与库内视频副本一起删。
+   * 只删 samples/ 目录内的真实文件（resolve + relative 校验），索引被改坏时也不会误删库外文件。
+   */
+  function removeSample({ sampleId = '' } = {}) {
+    const id = String(sampleId || '').trim();
+    if (!id) return { ok: false, code: 'INVALID_ARGUMENT', message: '需要 sampleId。' };
     const index = loadIndex();
-    const before = index.samples.length;
-    index.samples = index.samples.filter((row) => row.sampleId !== sampleId);
-    if (index.samples.length === before) return { ok: false, code: 'NOT_FOUND', message: `没有样例 ${sampleId}` };
+    const row = index.samples.find((item) => item.sampleId === id || String(item.videoId) === id);
+    if (!row) return { ok: false, code: 'NOT_FOUND', message: `没有样例 ${id}` };
+    index.samples = index.samples.filter((item) => item !== row);
     saveIndex(index);
-    return { ok: true, removed: before - index.samples.length };
+
+    const baseDir = resolve(samplesDir);
+    const targets = [row.file, join(samplesDir, `${row.sampleId}.json`)];
+    const removedFiles = [];
+    for (const target of targets) {
+      if (!target) continue;
+      const resolved = resolve(String(target));
+      const rel = relative(baseDir, resolved);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+      try {
+        if (existsSync(resolved)) {
+          unlinkSync(resolved);
+          removedFiles.push(resolved);
+        }
+      } catch {
+        // 单个文件删不掉不影响索引已删；下次清空样例时会再扫一次。
+      }
+    }
+    return { ok: true, removed: 1, sampleId: row.sampleId, files: removedFiles };
+  }
+
+  /**
+   * 删除一张素材筛选画像：画像 JSON、该画像的历史版本，以及归属该画像的全部样例
+   * （索引项、sidecar 与库内视频副本）一起删，不可恢复。
+   * 只删 samples/ 与 profiles/ 目录内的真实文件（resolve + relative 校验）。
+   */
+  function removeProfile({ profileId = '' } = {}) {
+    const id = String(profileId || '').trim();
+    if (!/^[\p{L}\p{N}_-]{1,64}$/u.test(id)) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: '画像 ID 不合法。' };
+    }
+    const file = join(profilesDir, `${id}.json`);
+    const current = readJson(file, null);
+    if (!current || current.id !== id) {
+      return { ok: false, code: 'NOT_FOUND', message: `没有素材筛选画像 ${id}。` };
+    }
+
+    const index = loadIndex();
+    const rows = index.samples.filter((item) => item.profileId === id);
+    index.samples = index.samples.filter((item) => item.profileId !== id);
+    saveIndex(index);
+
+    const baseDir = resolve(samplesDir);
+    const removedFiles = [];
+    const errors = [];
+    for (const row of rows) {
+      const targets = [row.file, join(samplesDir, `${row.sampleId}.json`)];
+      for (const target of targets) {
+        if (!target) continue;
+        const resolved = resolve(String(target));
+        const rel = relative(baseDir, resolved);
+        if (!rel || rel.startsWith('..') || isAbsolute(rel)) continue;
+        try {
+          if (existsSync(resolved)) {
+            unlinkSync(resolved);
+            removedFiles.push(resolved);
+          }
+        } catch (error) {
+          errors.push({ file: resolved, message: String(error?.message || error) });
+        }
+      }
+    }
+
+    try {
+      unlinkSync(file);
+    } catch (error) {
+      errors.push({ file, message: String(error?.message || error) });
+    }
+    const historyDir = join(profilesDir, '.history', id);
+    try {
+      rmSync(historyDir, { recursive: true, force: true });
+    } catch (error) {
+      errors.push({ file: historyDir, message: String(error?.message || error) });
+    }
+
+    return { ok: true, profileId: id, removedSamples: rows.length, removedFiles, errors };
   }
 
   function countUnassigned() {
@@ -626,9 +820,23 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
 
   /**
    * 从样例聚合生成画像卡：正样例决定“要什么”，反样例只贡献 mustNot。
-   * @param {{profileId:string, name?:string, threshold?:number, minSamples?:number}} opts
+   * 生成前会对缺少视觉特征的样例补抽帧+视觉描述（backfill），生成后用文本模型合成画像字段（synthesize）。
+   * @param {{profileId:string, name?:string, threshold?:number, minSamples?:number,
+   *   gateway?:object, modelEnv?:object, budgetFactory?:Function, signal?:AbortSignal,
+   *   backfill?:boolean, synthesize?:boolean}} opts
    */
-  function buildProfile({ profileId, name = null, threshold = null, minSamples = 3 } = {}) {
+  async function buildProfile({
+    profileId,
+    name = null,
+    threshold = null,
+    minSamples = 3,
+    gateway = modelGateway,
+    modelEnv = env,
+    budgetFactory: budgetFactoryOption = budgetFactory,
+    signal = undefined,
+    backfill = true,
+    synthesize = true,
+  } = {}) {
     if (!profileId) return { ok: false, code: 'INVALID_ARGUMENT', message: '需要 profileId。' };
     const all = listSamples({ limit: 1000, profileId });
     const samples = all.filter((sample) => normalizePolarity(sample.polarity) === 'positive');
@@ -641,6 +849,75 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
         positiveCount: samples.length,
         negativeCount: negatives.length,
       };
+    }
+
+    // B：生成画像前，对缺少视觉特征的样例补抽帧 + 视觉描述（失败也记录原因，供 D 段写进描述）。
+    const backfillReport = {
+      enabled: Boolean(backfill && gateway && typeof gateway.chat === 'function'),
+      attempted: 0,
+      filled: 0,
+      failed: 0,
+      skipped: 0,
+      errors: [],
+    };
+    if (backfillReport.enabled) {
+      const missing = all.filter((sample) => !sample.features);
+      const ffmpeg = findFfmpeg({ env: modelEnv });
+      if (!ffmpeg) {
+        backfillReport.skipped = missing.length;
+        backfillReport.errors.push({ code: 'NO_FFMPEG', message: '找不到 ffmpeg，跳过补抽帧。' });
+      } else if (missing.length) {
+        const index = loadIndex();
+        const budget = typeof budgetFactoryOption === 'function' ? budgetFactoryOption() : null;
+        for (const sample of missing) {
+          backfillReport.attempted += 1;
+          try {
+            const videoPath = isAbsolute(sample.file) ? sample.file : join(libraryDir, sample.file);
+            if (!existsSync(videoPath)) throw new Error(`样例视频不存在：${videoPath}`);
+            const frameResult = await extractFrames(videoPath, {
+              durationSec: Number(sample.meta?.duration) || 20,
+              count: 3,
+              tmpDir: join(libraryDir, '.tmp'),
+              ffmpeg,
+              signal,
+            });
+            const frames = frameResult?.frames || [];
+            if (!frames.length) {
+              throw new Error(frameResult?.message || frameResult?.code || '抽帧失败。');
+            }
+            const described = await describeWithModel({
+              frames,
+              meta: sample.meta || {},
+              signal,
+              env: modelEnv,
+              gateway,
+              budget,
+            });
+            if (!described.ok) {
+              throw Object.assign(new Error(described.message || '视觉描述失败。'), { code: described.code });
+            }
+            sample.features = described.features;
+            sample.featureModel = described.model || null;
+            sample.featureError = null;
+            backfillReport.filled += 1;
+          } catch (error) {
+            sample.featureError = {
+              code: error?.code || 'BACKFILL_FAILED',
+              message: String(error?.message || error || '补抽帧失败。'),
+            };
+            backfillReport.failed += 1;
+            backfillReport.errors.push({ sampleId: sample.sampleId, code: sample.featureError.code, message: sample.featureError.message });
+          }
+          writeJson(join(samplesDir, `${sample.sampleId}.json`), sample);
+          const row = (index.samples || []).find((item) => item.sampleId === sample.sampleId);
+          if (row) {
+            row.features = sample.features;
+            row.featureModel = sample.featureModel || null;
+            row.featureError = sample.featureError;
+          }
+        }
+        saveIndex(index);
+      }
     }
 
     const freq = new Map();
@@ -704,6 +981,13 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
       ? ` 反样例特征：${mustNot.slice(0, 6).join('、') || '无明显特征'}（来自 ${negatives.length} 条反样例，判定时作为否定项）。`
       : '';
 
+    // D：把补抽帧失败的原因写进画像描述，避免用户以为画像“凭空变空”。
+    const failedSamples = all.filter((sample) => sample.featureError);
+    const failureNote = failedSamples.length
+      ? ` 视觉特征缺失 ${failedSamples.length} 条：${[...new Set(failedSamples.map((sample) => String(sample.featureError?.message || sample.featureError?.code || '未知原因').slice(0, 60)))].slice(0, 3).join('；')}。`
+      : '';
+    const baseGuidance = `从 ${samples.length} 条正样例自动生成：常见关键词 ${keywords.slice(0, 6).join('、') || '无'}；视觉标签 ${topTags.slice(0, 6).join('、') || '无'}。${negativeNote}`;
+
     const profile = {
       id: profileId,
       name: name || `${profileId}（自动生成）`,
@@ -711,12 +995,47 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
       mustHave,
       niceToHave,
       mustNot,
-      guidance: `从 ${samples.length} 条正样例自动生成：常见关键词 ${keywords.slice(0, 6).join('、') || '无'}；视觉标签 ${topTags.slice(0, 6).join('、') || '无'}。${negativeNote}`,
+      guidance: `${baseGuidance}${failureNote}`,
       threshold: Number(threshold) || 60,
       generated: true,
       generatedAt: new Date().toISOString(),
       sampleCount: samples.length,
       negativeCount: negatives.length,
+    };
+
+    // C：用文本模型把样例证据合成为画像字段；失败时保留规则版结果，只记录原因。
+    const synthesis = { ok: false, model: null, code: null, message: null };
+    if (synthesize && gateway && typeof gateway.chat === 'function') {
+      const synthesized = await synthesizeProfileFields({
+        profile,
+        samples,
+        negatives,
+        gateway,
+        budget: typeof budgetFactoryOption === 'function' ? budgetFactoryOption() : null,
+        signal,
+      });
+      if (synthesized.ok) {
+        const fields = synthesized.fields || {};
+        if (fields.keywords?.length) profile.keywords = fields.keywords.slice(0, 12);
+        if (fields.mustHave?.length) profile.mustHave = fields.mustHave.slice(0, 6);
+        if (fields.niceToHave?.length) profile.niceToHave = fields.niceToHave.slice(0, 6);
+        if (fields.mustNot?.length) {
+          profile.mustNot = [...new Set([...fields.mustNot, ...(profile.mustNot || [])])].slice(0, 8);
+        }
+        profile.guidance = `${fields.description || baseGuidance}${negativeNote}${failureNote}`;
+        synthesis.ok = true;
+        synthesis.model = synthesized.model || null;
+      } else {
+        synthesis.code = synthesized.code || 'MODEL_FAILED';
+        synthesis.message = synthesized.message || '画像合成失败。';
+      }
+    }
+    profile.synthesis = { ok: synthesis.ok, model: synthesis.model, code: synthesis.code };
+    profile.backfill = {
+      attempted: backfillReport.attempted,
+      filled: backfillReport.filled,
+      failed: backfillReport.failed,
+      skipped: backfillReport.skipped,
     };
 
     const calibration = calibrate({ profile, samples, negatives });
@@ -728,7 +1047,7 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
     const previous = readJson(file, null);
     if (previous && previous.id === profileId) recordProfileVersion(previous, 'build');
     writeJson(file, profile);
-    return { ok: true, profile, calibration };
+    return { ok: true, profile, calibration, backfill: backfillReport, synthesis };
   }
 
   /**
@@ -855,6 +1174,7 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
     countSamples,
     addSample,
     removeSample,
+    removeProfile,
     setSamplePolarity,
     countUnassigned,
     assignUnassigned,

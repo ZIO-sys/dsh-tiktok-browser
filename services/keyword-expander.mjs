@@ -40,8 +40,13 @@ export async function expandKeywords({
 } = {}) {
   const seedList = [...new Set((Array.isArray(seeds) ? seeds : []).map(clean).filter(Boolean))].slice(0, 20);
   if (!seedList.length) return { ok: false, code: 'INVALID_ARGUMENT', message: '至少需要一个种子词。' };
+  // 0 = 不扩展关键词：只用种子词，不调用模型、不消耗 token。
+  const parsedCount = Number(targetCount);
+  const count = targetCount === '' || targetCount == null || !Number.isFinite(parsedCount)
+    ? 10
+    : Math.max(0, Math.min(Math.floor(parsedCount), 30));
+  if (count === 0) return { ok: true, keywords: [], count: 0, skipped: true, budget };
   if (!gateway) return { ok: false, code: 'MODEL_NOT_CONFIGURED', message: '模型网关未就绪。' };
-  const count = Math.max(3, Math.min(Number(targetCount) || 10, 30));
   // contentLanguage='auto'（P1-5 默认）表示只检测不拦截，扩展词沿用搜索指令语言。
   const targetLanguage = String(contentLanguage || 'auto').toLowerCase() === 'auto'
     ? queryLanguage

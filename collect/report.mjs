@@ -162,37 +162,6 @@ export function buildReport({ store, reportsDir, sinceDays = 1, now = new Date()
   }
   lines.push('');
 
-  lines.push('## 文本预筛（最近）');
-  {
-    const textCheckedTotal = runs.reduce((sum, run) => sum + (Number(run.textChecked ?? run.totals?.textChecked) || 0), 0);
-    const textSkippedTotal = runs.reduce((sum, run) => sum + (Number(run.textSkipped ?? run.totals?.textSkipped) || 0), 0);
-    const textTokensSaved = runs.reduce((sum, run) => sum + (Number(run.textTokensSaved ?? run.totals?.textTokensSaved) || 0), 0);
-    if (!textCheckedTotal && !textSkippedTotal) {
-      lines.push('最近没有文本预筛记录（开关关闭，或没有进入判定阶段的素材）。');
-    } else {
-      lines.push(`- 文本预筛检查：${textCheckedTotal} 条（只发文案/话题给文本模型）`);
-      lines.push(`- 文本直接拒绝：${textSkippedTotal} 条（不抓封面、不抽帧、不调视觉模型）`);
-      lines.push(`- 估算节省 token：约 ${textTokensSaved}`);
-    }
-  }
-  lines.push('');
-
-  lines.push('## 封面粗筛（最近）');
-  {
-    const checkedTotal = runs.reduce((sum, run) => sum + (Number(run.coverChecked ?? run.totals?.coverChecked) || 0), 0);
-    const coverSkippedTotal = runs.reduce((sum, run) => sum + (Number(run.coverSkipped ?? run.totals?.coverSkipped) || 0), 0);
-    const coverUnavailableTotal = runs.reduce((sum, run) => sum + (Number(run.coverUnavailable ?? run.totals?.coverUnavailable) || 0), 0);
-    const coverTokensSaved = runs.reduce((sum, run) => sum + (Number(run.coverTokensSaved ?? run.totals?.coverTokensSaved) || 0), 0);
-    if (!checkedTotal && !coverSkippedTotal) {
-      lines.push('最近没有封面粗筛记录（开关关闭，或没有进入判定阶段的素材）。');
-    } else {
-      lines.push(`- 封面粗筛检查：${checkedTotal} 条，其中封面不可用回退正式判定 ${coverUnavailableTotal} 条`);
-      lines.push(`- 封面直接拒绝：${coverSkippedTotal} 条（只调 1 张封面，不抽帧）`);
-      lines.push(`- 估算节省 token：约 ${coverTokensSaved}`);
-    }
-  }
-  lines.push('');
-
   lines.push('## 水印来源（最近）');
   {
     const archived = recent.filter((row) => row.archive?.file);
@@ -282,11 +251,8 @@ export function buildReport({ store, reportsDir, sinceDays = 1, now = new Date()
       total: counts.total,
       byStatus: counts.byStatus,
       skippedLanguage: recent.filter((row) => row.status === 'skipped_language').length,
+      skippedAspect: recent.filter((row) => row.status === 'skipped_aspect').length,
       prefilterSkipped: runs.reduce((sum, run) => sum + (Number(run.prefilterSkipped ?? run.totals?.prefilterSkipped) || 0), 0),
-      coverSkipped: runs.reduce((sum, run) => sum + (Number(run.coverSkipped ?? run.totals?.coverSkipped) || 0), 0),
-      coverChecked: runs.reduce((sum, run) => sum + (Number(run.coverChecked ?? run.totals?.coverChecked) || 0), 0),
-      textSkipped: runs.reduce((sum, run) => sum + (Number(run.textSkipped ?? run.totals?.textSkipped) || 0), 0),
-      textChecked: runs.reduce((sum, run) => sum + (Number(run.textChecked ?? run.totals?.textChecked) || 0), 0),
       watermarked: recent.filter((row) => row.archive?.watermark === 'watermarked').length,
       duplicateSkipped: runs.reduce((sum, run) => sum + (Number(run.duplicateSkipped ?? run.totals?.duplicateSkipped) || 0), 0),
       duplicateChecked: runs.reduce((sum, run) => sum + (Number(run.duplicateChecked ?? run.totals?.duplicateChecked) || 0), 0),

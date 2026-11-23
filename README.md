@@ -28,6 +28,15 @@ dsh plugin --profile web add github:ZIO-sys/dsh-tiktok-browser
 
 每次发布新版本时，必须提升 `package.json` 的 `version` 并推送到默认分支 `main`。DSH 市场发现远端 SemVer 高于已安装版本后，会在插件卡片上显示“更新 vX.Y.Z”；用户点击更新并按提示重启即可。只提交代码而不提升版本号，不会作为稳定的新版本提示。GitHub Release / tag 可用来记录发布，但更新检查以默认分支中的 `package.json` 版本为准。
 
+### v0.2.4
+
+- 采集只按真实归档成功计数，批量任务按成功总数达标；统一本次采集上限 200。
+- AI 扩展数量允许为 0：仅使用种子词，不调用模型，也不受模型预算拦截；预览仍显示种子词。
+- 固定 9:16 竖屏筛选；删除文本预筛、封面粗筛、画面文字与卖点提取及观看兴趣画像模块，保留规则预筛。
+- 样例库支持画像/正反样例文件夹、单条删除与画像级联删除，修复超过 500 条后统计和浏览不完整。
+- 生成素材画像前补齐缺失的抽帧与视觉描述；校准时不再重复调用模型。
+- 素材库和 CSV 导出支持按首次采集日期筛选；精简模型配置说明。
+
 ### 本地开发安装（不参与在线更新）
 
 需要修改源码并即时调试时，仍可克隆仓库后通过本地目录安装：
@@ -48,7 +57,7 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 设置侧栏“刷 TikTok”包含：
 
 - **基础设置**：DSH/自定义 OpenAI 兼容模型、代理、归档目录、CDP 端口
-- **样例与画像**：流式上传视频、生成素材筛选画像与独立观看兴趣画像
+- **样例与画像**：按画像、正/反样例两级分组浏览，流式上传视频，生成素材筛选画像；支持删除单条样例及级联删除画像
 - **视频观看**：目标种子词、AI 扩展预览、搜索/目标语言、每词条数、token 上限、启动/停止
 - **下载与归档**：可编辑归档绝对路径、Windows 原生文件夹选择器、page/aix/auto 通道、AIX 检测、URL 页面抓取兜底与人工接管
 - **自检与用量**：Edge/代理/模型/AIX 自检、token 账本、日报生成
@@ -59,7 +68,7 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 
 - 新用户首次打开设置页时，所有文本与数值输入框均为空，且不显示浅灰占位提示；文本/视觉模型等空值选项也显示为空白。已有用户保存过的配置仍正常回显。
 - 「默认模型」沿用宿主“新开对话默认选择的模型”，每次判定时实时读取；文本/视觉专用模型留空表示不单独覆盖。默认模型或 DSH 来源下可选择 `提供商/模型名` 跨提供商路由，自定义 OpenAI 兼容接口会原样发送模型 ID（包括名称中的 `/`）。实际路由可在「自检与用量」查看。
-- 数值项留空时在运行层使用原默认值：CDP 端口 `9333`、AI 扩展数量 `10`、每词采集 `25` 条、本次任务 token 上限 `50000`、每日 token 上限 `200000`、画面判重距离 `6`、文案判重相似度 `0.85`、素材画像阈值 `60`。
+- 数值项留空时在运行层使用原默认值：CDP 端口 `9333`、AI 扩展数量 `10`（填 `0` 表示不扩展关键词，只用种子词且不调用模型）、每词采集 `25` 条、本次任务 token 上限 `50000`、每日 token 上限 `200000`、画面判重距离 `6`、文案判重相似度 `0.85`、素材画像阈值 `60`。
 - 视频归档目录留空时使用运行目录下的 `downloads/`（默认 `~/.dsh/tiktok-browser/downloads/`）；被拒素材目录留空仍表示直接删除。
 - API Key 保存后不回显，空白保存不会覆盖已保存的秘密值。旧版本遗留的代理用户名/密码不再使用或回显，并会在下次保存设置时清理。
 - 代理模式支持「自动」「跟随系统代理」「手动」。自动模式在已有代理地址、代理池或 `TIKTOK_PROXY_SERVER` 时使用手动代理，否则跟随系统；系统代理模式支持 Windows 固定代理与 PAC 脚本，浏览器直接继承系统设置。
@@ -89,13 +98,13 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 | `tiktok_search` | 关键词搜索，滚动加载候选并逐条提取详情；可选 `download` 直接下载、`judge` 直接判定。 |
 | `tiktok_download` | 按关键词或 `videoIds` 下载候选（已归档自动跳过）。 |
 | `tiktok_candidates` | 查询候选库（按状态过滤）。 |
-| `tiktok_export` | 导出候选库为 CSV（`state/exports/candidates-YYYY-MM-DD.csv`，UTF-8 BOM）。 |
+| `tiktok_export` | 导出候选库为 CSV（`state/exports/candidates-YYYY-MM-DD.csv`，UTF-8 BOM），支持按首次采集日期过滤。 |
 | `tiktok_judge` | 对已入库候选做规则 + 模型打分，写 `accepted` / `rejected`。 |
 | `tiktok_profiles` | 列出画像卡（默认 AR 滤镜 / 益智解谜 + 自动生成的）。 |
 | `tiktok_diagnostics` | 自检：node / Edge / 代理配置 / 代理连通性 / 浏览器状态。 |
 | `tiktok_library_list` | 列样例库。 |
 | `tiktok_library_add` | 导入样例（本地 mp4 或 TikTok 链接），抽帧 + 模型描述，存 sidecar。 |
-| `tiktok_profile_build` | 用样例聚合生成画像卡，可选按样例分布校准阈值。 |
+| `tiktok_profile_build` | 用样例聚合生成画像卡；缺少视觉特征时先补抽帧与视觉描述，再由文本模型合成，可选按样例分布校准阈值。 |
 | `tiktok_collect` | 多关键词批量采集：搜索 → 提取 → 下载 → 判定，支持断点续跑（当天已成功的关键词自动跳过）。 |
 | `tiktok_report` | 生成 Markdown 日报到 `state/reports/report-YYYY-MM-DD.md`。 |
 | `tiktok_config` | 读/改 `config.json`（不传 `patch` 为只读）。 |
@@ -121,6 +130,9 @@ git clone https://github.com/ZIO-sys/dsh-tiktok-browser.git
 ```
 
 ## 判定逻辑
+
+- **画幅要求**：只接受 9:16 竖屏（容差 ±3%）；横屏、方图及分辨率未知的候选在下载前跳过，补下载同样检查。
+- **成功计数**：`targetVideos` 仅统计本次真实归档成功数量（0–200）；下载失败、判定拒绝、画幅不符及重复项均不计入。
 
 - **规则分**（`collect/judge-rule.mjs`，起分 50）：关键词命中 +6/个（上限 +24）、mustHave +8/个（上限 +24）、niceToHave +4/个、时长 15–30s +12、竖屏 +6；`mustNot` 命中直接否决。
 - **模型分**（`collect/judge-model.mjs`）：抽 3–5 帧 + 文案发给多模态模型，返回 0–100 与理由；接口默认流式（SSE）已兼容，解析带括号配平 + 字段兜底。

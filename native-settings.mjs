@@ -23,7 +23,6 @@ const SAFE_DURING_RUN = new Set([
   '/report/reveal',
   // 历史版本列表只读，采集运行中也可以查看。
   '/profiles/material/history',
-  '/profiles/interest/history',
 ]);
 
 const send = (res, status, body) => {
@@ -212,7 +211,6 @@ export function createNativeSettingsRoute({
         active: controller.profiles().judge,
       },
       profiles: profiles.profiles,
-      interestProfiles: controller.listInterestProfiles(),
       library: {
         count: library.count,
         byProfile: library.byProfile,
@@ -326,21 +324,15 @@ export function createNativeSettingsRoute({
             if (!run) throw fail('任务服务未就绪。', 503);
             return send(res, 200, run.stop());
           case '/profiles/material/build':
-            return send(res, 200, controller.profileBuild(input));
+            return send(res, 200, await controller.profileBuild(input));
           case '/profiles/material/save':
             return send(res, 200, controller.saveMaterialProfile(input));
-          case '/profiles/interest/build':
-            return send(res, 200, await controller.buildInterestProfile(input));
-          case '/profiles/interest/save':
-            return send(res, 200, controller.saveInterestProfile(input));
+          case '/profiles/material/delete':
+            return send(res, 200, controller.removeMaterialProfile(input));
           case '/profiles/material/history':
             return send(res, 200, controller.listMaterialProfileHistory(input));
           case '/profiles/material/restore':
             return send(res, 200, controller.restoreMaterialProfile(input));
-          case '/profiles/interest/history':
-            return send(res, 200, controller.listInterestProfileHistory(input));
-          case '/profiles/interest/restore':
-            return send(res, 200, controller.restoreInterestProfile(input));
           case '/library/purge':
             return send(res, 200, controller.purgeLibrary(input));
           case '/library/restore-defaults':
@@ -352,9 +344,15 @@ export function createNativeSettingsRoute({
               status: input.status ?? '',
               query: input.query ?? '',
               sinceDays: Number(input.sinceDays) || 0,
+              date: input.date ?? '',
             }));
           case '/library/sample/polarity':
             return send(res, 200, controller.librarySetPolarity(input));
+          case '/library/sample/delete': {
+            const value = controller.libraryRemoveSample(input);
+            if (!value.ok) throw fail(value.message || '删除样例失败。', 400, value.code || null);
+            return send(res, 200, value);
+          }
           case '/feedback/list':
             return send(res, 200, controller.listCandidateFeedback(input));
           case '/feedback/save':

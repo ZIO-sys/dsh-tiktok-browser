@@ -97,119 +97,13 @@ export function buildPrompt(profile, meta, { threshold } = {}) {
     '下面给出若干关键帧（按时间顺序）。请结合画面与文案判断：',
     '1) 是否命中一票否决项；2) 是否满足必须符合项；3) 前 3 秒是否有强钩子；4) 时长是否合适；5) 画面是否清晰体现玩法/产品。',
     '',
-    '另外请逐字抄写画面里出现的文字（贴纸字幕、按钮文案、产品名、玩法提示等）：只抄看得清的字，不要翻译、不要脑补；没有任何文字就留空字符串。',
     '',
     '严格只输出一个 JSON 对象，不要代码块、不要解释、不要在对象外再输出任何数组：',
-    '{"score": 0-100 的整数, "verdict": "accept" | "reject", "reasons": ["中文理由1", "中文理由2"], "tags": ["中文标签"], "onScreenText": "画面文字，逐字抄写，没有就空字符串"}',
-    'reasons 最多 3 条、每条不超过 40 个汉字；tags 最多 4 个、每个不超过 8 个汉字；onScreenText 最多 120 个字符。',
+    '{"score": 0-100 的整数, "verdict": "accept" | "reject", "reasons": ["中文理由1", "中文理由2"], "tags": ["中文标签"]}',
+    'reasons 最多 3 条、每条不超过 40 个汉字；tags 最多 4 个、每个不超过 8 个汉字。',
     `score 与 verdict 必须一致：score >= ${line}（当前判定阈值）时 verdict 为 accept，低于该阈值时为 reject。`,
   );
   return lines.join('\n');
-}
-
-/**
- * P1-6 文本预筛提示词：只看文案/话题，不看画面，要求保守（拿不准就给中间分）。
- */
-export function buildTextPrompt(profile, meta) {
-  const lines = [
-    '你是 TikTok 广告素材筛选助手。现在只能看到文案与话题，看不到画面，请只根据文字信息给一个 0-100 的匹配度分。',
-    '因为看不到画面，请保守打分：文字中性或信息不足时给 45-55，只有文字明确证明符合才给高分，文字明确违反才给低分。',
-    '',
-    `画像名称：${profile.name}`,
-    `必须符合：${(profile.mustHave || []).join('；') || '无'}`,
-    `加分项：${(profile.niceToHave || []).join('；') || '无'}`,
-    `一票否决：${(profile.mustNot || []).join('；') || '无'}`,
-  ];
-  if (Array.isArray(profile.mustNot) && profile.mustNot.length) {
-    lines.push(`不要的特征（来自用户标注的反样例，命中即视为不符合）：${profile.mustNot.join('；')}`);
-  }
-  lines.push(
-    '',
-    '文字信息：',
-    `- 文案：${String(meta.desc || '').slice(0, 300) || '（无）'}`,
-    `- 话题：${(meta.challenges || []).join(' ') || '（无）'}`,
-    `- 作者：${meta.author || '未知'}`,
-    '',
-    '严格只输出一个 JSON 对象，不要代码块、不要解释：',
-    '{"score": 0-100 的整数, "reasons": ["中文理由1"], "tags": ["中文标签"]}',
-    'reasons 最多 2 条、每条不超过 30 个汉字；tags 最多 3 个、每个不超过 8 个汉字。',
-  );
-  return lines.join('\n');
-}
-
-/**
- * P1-6 文本预筛：用文本模型按文案/话题打一个粗分。
- * 没有网关、没有文案时返回 ok:false（调用方应放行到正式判定，不误杀）。
- */
-export async function scoreTextWithModel({
-  profile,
-  meta = {},
-  gateway = null,
-  budget = null,
-  threshold,
-  signal,
-} = {}) {
-  const desc = String(meta.desc || '').trim();
-  const challenges = Array.isArray(meta.challenges) ? meta.challenges.filter(Boolean) : [];
-  if (!desc && !challenges.length) {
-    return { ok: false, code: 'NO_TEXT', message: '没有文案或话题，文本预筛跳过。' };
-  }
-  if (!gateway) {
-    return { ok: false, code: 'TEXT_PREFILTER_NO_GATEWAY', message: '没有模型网关，文本预筛跳过。' };
-  }
-  const result = await gateway.chat({
-    kind: 'text',
-    messages: [{ role: 'user', content: buildTextPrompt(profile, meta, { threshold }) }],
-    maxTokens: 400,
-    temperature: 0.1,
-    budget,
-    operation: 'judge_text',
-    retry: MODEL_RETRY,
-    signal,
-  });
-  if (!result.ok) {
-    return {
-      ok: false,
-      code: result.code,
-      message: result.message,
-      model: result.model,
-      source: result.source,
-      usage: result.usage,
-      latencyMs: result.latencyMs,
-    };
-  }
-  const parsed = parseJsonReply(result.content);
-  if (!parsed) {
-    return { ok: false, code: 'TEXT_UNPARSABLE', message: '文本模型回复无法解析为 JSON。', model: result.model, source: result.source };
-  }
-  const score = Math.max(0, Math.min(100, Math.round(Number(parsed.score))));
-  if (!Number.isFinite(score)) {
-    return { ok: false, code: 'TEXT_BAD_SCORE', message: '文本模型没有返回有效分数。', model: result.model, source: result.source };
-  }
-  return {
-    ok: true,
-    score,
-    reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 3).map((item) => String(item).slice(0, 80)) : [],
-    tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 4).map((item) => String(item).slice(0, 40)) : [],
-    model: result.model,
-    source: result.source,
-    usage: result.usage,
-    latencyMs: result.latencyMs,
-  };
-}
-
-/**
- * 画面文字归一化：字符串化、压平空白、去掉明显占位词，最多 120 字符。
- * 模型经常回 "无"/"none"/"N/A"，统一当空。
- */
-export function normalizeOnScreenText(value) {
-  if (value === null || value === undefined) return '';
-  const text = String(Array.isArray(value) ? value.join(' ') : value)
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!text) return '';
-  if (/^(无|没有|none|n\/?a|null|nil|-|—)$/i.test(text)) return '';
-  return text.slice(0, 120);
 }
 
 export function parseJsonReply(text, { threshold } = {}) {
@@ -369,7 +263,6 @@ export async function scoreWithModel({
       verdict: parsed.verdict === 'reject' ? 'reject' : 'accept',
       reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6).map((item) => String(item).slice(0, 160)) : [],
       tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8).map((item) => String(item).slice(0, 40)) : [],
-      onScreenText: normalizeOnScreenText(parsed.onScreenText),
       model: result.model,
       source: result.source,
       usage: result.usage,
@@ -461,7 +354,6 @@ export async function scoreWithModel({
       verdict: parsed.verdict === 'reject' ? 'reject' : 'accept',
       reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6).map((item) => String(item).slice(0, 160)) : [],
       tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 8).map((item) => String(item).slice(0, 40)) : [],
-      onScreenText: normalizeOnScreenText(parsed.onScreenText),
       model: resolved.model,
       source: resolved.source,
       latencyMs: Date.now() - startedAt,

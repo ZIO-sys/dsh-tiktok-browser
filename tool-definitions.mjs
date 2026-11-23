@@ -64,7 +64,7 @@ export const TOOL_DEFINITIONS = [
       properties: {
         status: {
           type: 'string',
-          enum: ['discovered', 'extracted', 'extract_failed', 'scored', 'accepted', 'archived', 'download_failed', 'rejected', 'skipped_language', 'duplicate'],
+          enum: ['discovered', 'extracted', 'extract_failed', 'scored', 'accepted', 'archived', 'download_failed', 'rejected', 'skipped_language', 'skipped_aspect', 'duplicate'],
           description: '可选，按状态过滤。',
         },
         limit: { type: 'integer', description: '返回条数，默认 50，范围 1–500。' },
@@ -75,18 +75,19 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'tiktok_export',
     description:
-      '把本地候选库导出为 CSV（state/exports/candidates-YYYY-MM-DD.csv，UTF-8 BOM，Excel 直接打开中文不乱码）。支持按状态、关键词、最近天数过滤，行数与设置页“素材库”的筛选结果一致。只读候选库，不发请求、不调模型。',
+      '把本地候选库导出为 CSV（state/exports/candidates-YYYY-MM-DD.csv，UTF-8 BOM，Excel 直接打开中文不乱码）。支持按状态、关键词、最近天数或单个采集日期过滤，行数与设置页“素材库”的筛选结果一致。只读候选库，不发请求、不调模型。',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         status: {
           type: 'string',
-          enum: ['all', 'discovered', 'extracted', 'extract_failed', 'scored', 'accepted', 'archived', 'download_failed', 'rejected', 'skipped_language', 'duplicate'],
+          enum: ['all', 'discovered', 'extracted', 'extract_failed', 'scored', 'accepted', 'archived', 'download_failed', 'rejected', 'skipped_language', 'skipped_aspect', 'duplicate'],
           description: '可选，按状态过滤；all 或留空导出全部。',
         },
         query: { type: 'string', description: '可选，按关键词/作者/videoId/文案过滤。' },
         sinceDays: { type: 'integer', description: '可选，只导出最近 N 天更新的候选；0 表示不限。' },
+        date: { type: 'string', description: '可选，按采集日期过滤，格式 YYYY-MM-DD；按首次入库 collectedAt 的本地日期计算。' },
       },
       required: [],
     },
@@ -94,7 +95,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'tiktok_judge',
     description:
-      '对已入库候选做素材判定：规则分（关键词/画像/时长/画幅/mustNot 否决）+ 视觉模型分（抽关键帧问多模态模型匹配度），加权得出总分，低于阈值标记 rejected 并删除视频只留 JSON。只读判定，不点赞、不评论、不转发。',
+      '对已入库候选做素材判定：规则分（关键词/画像/时长/画幅/mustNot 否决，其中画幅只认 9:16 竖屏，非 9:16 或分辨率未知直接一票否决）+ 视觉模型分（抽关键帧问多模态模型匹配度），加权得出总分，低于阈值标记 rejected 并删除视频只留 JSON。只读判定，不点赞、不评论、不转发。',
     parameters: {
       type: 'object',
       additionalProperties: false,

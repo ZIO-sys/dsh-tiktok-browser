@@ -31,8 +31,14 @@ export class RunService {
     const seeds = textList(input.seeds, 20);
     if (!seeds.length) throw runError('至少填写一个种子词。');
     const profileId = input.profileId == null ? null : String(input.profileId).slice(0, 80);
-    const targetCount = Math.max(3, Math.min(Number(input.targetCount) || 10, 30));
+    // 0 = 不扩展关键词（只用种子词）；留空或非法值回退默认 10。
+    const parsedTargetCount = Number(input.targetCount);
+    const targetCount = input.targetCount === '' || input.targetCount == null || !Number.isFinite(parsedTargetCount)
+      ? 10
+      : Math.max(0, Math.min(Math.floor(parsedTargetCount), 30));
     const maxPerRun = Math.max(1, Math.min(Number(input.maxPerRun) || 5, 50));
+    // 本次采集数量：>0 时按「成功归档数」采集，采满即停；0/留空 = 旧行为。
+    const targetVideos = Math.max(0, Math.min(Math.floor(Number(input.targetVideos) || 0), 200));
     const queryLanguage = String(input.queryLanguage || 'en').slice(0, 16);
     const contentLanguage = String(input.contentLanguage || 'auto').slice(0, 16);
     const exclude = textList(input.exclude, 30);
@@ -54,6 +60,7 @@ export class RunService {
       queryLanguage,
       contentLanguage,
       targetCount,
+      targetVideos,
       maxPerRun,
       startedAt: new Date().toISOString(),
       endedAt: null,
@@ -65,6 +72,7 @@ export class RunService {
     void this.#controller.expandAndCollect({
       seeds,
       targetCount,
+      targetVideos,
       queryLanguage,
       contentLanguage,
       exclude,

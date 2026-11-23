@@ -4,10 +4,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { coverUrlOf, fetchCoverFrame } from './cover.mjs';
 import { extractFrames } from './frames.mjs';
-import { scoreTextWithModel, scoreWithModel } from './judge-model.mjs';
-import { extractSellingPoints } from '../services/selling-points.mjs';
+import { scoreWithModel } from './judge-model.mjs';
 import { ruleScore } from './judge-rule.mjs';
 
 const DEFAULT_THRESHOLD = 60;
@@ -17,12 +15,6 @@ const DEFAULT_MODEL_WEIGHT = 0.6;
 const PREFILTER_MARGIN = 20;
 // 一次视觉判定的粗略估算（3 帧 + 提示词），只用于报告里的“节省 token”，不写入账本。
 const PREFILTER_TOKEN_ESTIMATE = 600;
-// P1-6 封面粗筛：1 张封面先粗判，低于「阈值−10」直接拒绝；估算成本约 250 token。
-const COVER_PREFILTER_MARGIN = 10;
-const COVER_TOKEN_ESTIMATE = 250;
-// P1-6 文本预筛：文案/话题先给文本模型一个粗分，低于「阈值−20」直接拒绝；估算成本约 120 token。
-const TEXT_PREFILTER_MARGIN = 20;
-const TEXT_TOKEN_ESTIMATE = 120;
 
 function libraryHasSamples(paths) {
   const indexPath = join(paths.libraryDir, 'sample-index.json');
@@ -56,8 +48,6 @@ export async function judgeCandidate({
   config = {},
   paths,
   videoPath = null,
-  page = null,
-  coverFrame = null,
   api = null,
   modelGateway = null,
   budget = null,
@@ -119,124 +109,8 @@ export async function judgeCandidate({
     return { ok: true, videoId: candidate.videoId, score: 0, verdict: 'rejected', ruleScore: 0, modelScore: null, reasons, tags, veto: true, coldStart, threshold };
   }
 
-  // P1-6 文本预筛：只用文案/话题问文本模型，明显不符直接拒绝；没文案/没网关/调用失败时放行到正式判定。
-  const textPrefilter =
-    judgeConfig.textPrefilter === true ||
-    ['on', 'true', '1'].includes(String(judgeConfig.textPrefilter || '').toLowerCase());
-  let textScore = null;
-  let textNote = null;
-  let textMeta = null;
-  if (textPrefilter && judgeConfig.useModel !== false) {
-    const textResult = await scoreTextWithModel({
-      profile,
-      meta: modelMetaOf(candidate),
-      gateway: modelGateway,
-      budget,
-      threshold,
-      signal,
-    });
-    if (!textResult.ok && textResult.code === 'TOKEN_BUDGET_EXHAUSTED') {
-      return { ok: false, code: textResult.code, message: textResult.message, videoId: candidate.videoId };
-    }
-    if (textResult.ok) {
-      textScore = textResult.score;
-      textMeta = { model: textResult.model, source: textResult.source, latencyMs: textResult.latencyMs, usage: textResult.usage };
-      if (textScore < threshold - TEXT_PREFILTER_MARGIN) {
-        return {
-          ok: true,
-          videoId: candidate.videoId,
-          score: rule.ruleScore,
-          verdict: 'rejected',
-          ruleScore: rule.ruleScore,
-          modelScore: null,
-          reasons: ['文本预筛判定不符', ...(textResult.reasons || [])].slice(0, 6),
-          tags: textResult.tags || [],
-          veto: false,
-          prefiltered: true,
-          prefilter: 'text',
-          prefilterReason: 'low-text-score',
-          prefilterLimit: threshold - TEXT_PREFILTER_MARGIN,
-          textScore,
-          estimatedTokensSaved: PREFILTER_TOKEN_ESTIMATE - TEXT_TOKEN_ESTIMATE,
-          coldStart,
-          threshold,
-        };
-      }
-    } else {
-      textNote = textResult.code || 'TEXT_PREFILTER_FAILED';
-    }
-  }
-
-  // P1-6 封面粗筛：先用 1 张封面做低成本粗判，明显不符直接拒绝；抓不到封面/模型失败时回退正式判定。
-  const coverPrefilter =
-    judgeConfig.coverPrefilter === true ||
-    ['on', 'true', '1'].includes(String(judgeConfig.coverPrefilter || '').toLowerCase());
-  let coverScore = null;
-  let coverMeta = null;
-  let coverNote = null;
-  if (coverPrefilter && judgeConfig.useModel !== false) {
-    let frame = coverFrame;
-    if (!frame) {
-      const coverUrl = coverUrlOf(candidate);
-      if (coverUrl) {
-        const fetched = await fetchCoverFrame({ page, url: coverUrl, fetchImpl, signal });
-        if (fetched.ok) frame = fetched.frame;
-        else coverNote = fetched.code || 'COVER_UNAVAILABLE';
-      } else {
-        coverNote = 'NO_COVER_URL';
-      }
-    }
-    if (frame) {
-      const coverResult = await scoreWithModel({
-        frames: [frame],
-        profile,
-        meta: modelMetaOf(candidate),
-        api: api ?? judgeConfig.api,
-        gateway: modelGateway,
-        budget,
-        threshold,
-        env,
-        signal,
-        fetchImpl,
-      });
-      if (!coverResult.ok && coverResult.code === 'TOKEN_BUDGET_EXHAUSTED') {
-        return { ok: false, code: coverResult.code, message: coverResult.message, videoId: candidate.videoId };
-      }
-      if (coverResult.ok) {
-        coverScore = coverResult.score;
-        coverMeta = { model: coverResult.model, source: coverResult.source, latencyMs: coverResult.latencyMs, usage: coverResult.usage };
-        if (coverScore < threshold - COVER_PREFILTER_MARGIN) {
-          return {
-            ok: true,
-            videoId: candidate.videoId,
-            score: coverScore,
-            verdict: 'rejected',
-            ruleScore: rule.ruleScore,
-            modelScore: coverScore,
-            reasons: ['封面粗筛判定不符', ...(coverResult.reasons || [])].slice(0, 6),
-            tags: coverResult.tags || [],
-            veto: false,
-            prefiltered: true,
-            prefilter: 'cover',
-            prefilterReason: 'low-cover-score',
-            prefilterLimit: threshold - COVER_PREFILTER_MARGIN,
-            coverScore,
-            textScore,
-            textNote,
-            estimatedTokensSaved: PREFILTER_TOKEN_ESTIMATE - COVER_TOKEN_ESTIMATE,
-            coldStart,
-            threshold,
-          };
-        }
-      } else {
-        coverNote = coverResult.code || 'COVER_MODEL_FAILED';
-      }
-    }
-  }
-
   let modelScore = null;
   let modelMeta = null;
-  let onScreenText = '';
   if (judgeConfig.useModel !== false) {
     let frames = [];
     if (videoPath && existsSync(videoPath)) {
@@ -265,36 +139,12 @@ export async function judgeCandidate({
       }
       if (result.ok) {
         modelScore = result.score;
-        onScreenText = result.onScreenText || '';
         reasons.push(...result.reasons);
         tags.push(...result.tags);
         modelMeta = { model: result.model, source: result.source, latencyMs: result.latencyMs, usage: result.usage };
       } else {
         reasons.push(`模型分失败：${result.message || result.code}`);
       }
-    }
-  }
-
-  // P2-6：卖点提取（默认 off）。失败只记 sellingNote，绝不改判定与分数。
-  let sellingPoints = null;
-  let sellingNote = null;
-  const sellingEnabled =
-    judgeConfig.sellingPoints === true ||
-    ['on', 'true', '1'].includes(String(judgeConfig.sellingPoints || '').toLowerCase());
-  if (sellingEnabled && judgeConfig.useModel !== false) {
-    try {
-      const extracted = await extractSellingPoints({
-        profile,
-        meta: modelMetaOf(candidate),
-        onScreenText,
-        gateway: modelGateway,
-        budget,
-        signal,
-      });
-      if (extracted.ok) sellingPoints = extracted.points;
-      else sellingNote = extracted.code || 'SELLING_POINTS_FAILED';
-    } catch (error) {
-      sellingNote = error?.code || 'SELLING_POINTS_FAILED';
     }
   }
 
@@ -325,13 +175,6 @@ export async function judgeCandidate({
     veto: false,
     reasons: reasons.slice(0, 12),
     tags: [...new Set(tags)].slice(0, 12),
-    coverScore,
-    coverNote,
-    textScore,
-    textNote,
-    onScreenText,
-    sellingPoints,
-    sellingNote,
     coldStart,
     threshold,
     judgedAt: new Date().toISOString(),
@@ -347,13 +190,6 @@ export async function judgeCandidate({
     reasons: record.reasons,
     tags: record.tags,
     veto: false,
-    coverScore,
-    coverNote,
-    textScore,
-    textNote,
-    onScreenText,
-    sellingPoints,
-    sellingNote,
     coldStart,
     threshold,
   };

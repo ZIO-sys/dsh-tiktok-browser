@@ -149,7 +149,7 @@ export function normalizeItem(item, { videoId, url } = {}) {
 /** 通道 B：从可见 DOM 抓最小字段集。 */
 export async function extractFromDom(page) {
   const raw = await page
-    .evaluate(() => {
+    .evaluate(async () => {
       const text = (selector) => {
         const el = document.querySelector(selector);
         return el ? (el.textContent || '').trim() : null;
@@ -158,7 +158,28 @@ export async function extractFromDom(page) {
         const el = document.querySelector(selector);
         return el ? el.getAttribute(name) : null;
       };
-      const video = document.querySelector('video');
+      // 作品页可能同时挂着多个 <video>（预加载/浮层），挑真正带元数据、面积最大的那个。
+      const pickVideo = () => {
+        const list = Array.from(document.querySelectorAll('video'));
+        if (!list.length) return null;
+        const withMeta = list.filter((v) => v.videoWidth > 0 && v.videoHeight > 0);
+        if (!withMeta.length) return list[0];
+        withMeta.sort((a, b) => b.videoWidth * b.videoHeight - a.videoWidth * a.videoHeight);
+        return withMeta[0];
+      };
+      // 有界等待：videoWidth/videoHeight 在元数据加载前是 0，最多等 3 秒。
+      const waitMeta = (ms = 3000) =>
+        new Promise((resolve) => {
+          const started = Date.now();
+          const tick = () => {
+            const v = pickVideo();
+            if (v && v.videoWidth > 0 && v.videoHeight > 0) return resolve(v);
+            if (Date.now() - started >= ms) return resolve(v || null);
+            setTimeout(tick, 120);
+          };
+          tick();
+        });
+      const video = await waitMeta(3000);
       const canonical = document.querySelector('link[rel="canonical"]');
       return {
         desc: text('[data-e2e="browse-video-desc"]'),
@@ -169,6 +190,8 @@ export async function extractFromDom(page) {
         music: text('[data-e2e="browse-music"]'),
         src: video?.currentSrc || video?.src || null,
         poster: video?.poster || null,
+        videoWidth: video?.videoWidth || 0,
+        videoHeight: video?.videoHeight || 0,
         canonical: canonical?.href || null,
         pageUrl: location.href,
         title: document.title,
@@ -178,6 +201,9 @@ export async function extractFromDom(page) {
 
   if (!raw) return null;
   const match = /\/video\/(\d+)/.exec(raw.canonical || raw.pageUrl || '');
+  // DOM 兜底通道的分辨率：读 <video> 的固有像素尺寸，拿不到就保持 null（交由画幅规则按未知拒绝）。
+  const domWidth = Number(raw.videoWidth) > 0 ? Number(raw.videoWidth) : null;
+  const domHeight = Number(raw.videoHeight) > 0 ? Number(raw.videoHeight) : null;
   return {
     videoId: match ? match[1] : null,
     url: raw.canonical || raw.pageUrl || null,
@@ -195,9 +221,9 @@ export async function extractFromDom(page) {
     music: { title: raw.music || null, author: null, original: false },
     challenges: [],
     video: {
-      width: null,
-      height: null,
-      ratio: null,
+      width: domWidth,
+      height: domHeight,
+      ratio: domWidth && domHeight ? Number((domWidth / domHeight).toFixed(4)) : null,
       cover: raw.poster || null,
       dynamicCover: null,
       playAddr: raw.src || null,

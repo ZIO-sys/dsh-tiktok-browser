@@ -20,8 +20,6 @@ export const EXPORT_FIELDS = Object.freeze([
   'verdict',
   'ruleScore',
   'modelScore',
-  'textScore',
-  'coverScore',
   'archivedPath',
   'updatedAt',
 ]);
@@ -36,20 +34,22 @@ export function formatDateKey(now = new Date()) {
 /**
  * 候选筛选（唯一实现）。
  * @param {Array<object>} rows store.loadCandidates() 的值
- * @param {{status?:string, query?:string, sinceDays?:number, videoId?:string, maxAgeDays?:number, now?:number}} filter
+ * @param {{status?:string, query?:string, sinceDays?:number, videoId?:string, maxAgeDays?:number, date?:string, now?:number}} filter
  *   videoId: 精确检索指定作品（trim + 忽略大小写）。
  *   maxAgeDays: 列表层自动隐藏“首次采集时间早于 N 天”的记录（无 collectedAt 的旧记录回退 updatedAt）；
  *   显式传 videoId 时忽略，便于按 ID 找回旧素材。只影响展示，不删除任何文件或候选数据。
+ *   date: 按“采集日期”筛选单日（本地时区 YYYY-MM-DD）；传了有效日期时忽略 sinceDays 与 maxAgeDays。
  */
-export function filterCandidateRows(rows, { status = '', query = '', sinceDays = 0, videoId = '', maxAgeDays = 0, now = Date.now() } = {}) {
+export function filterCandidateRows(rows, { status = '', query = '', sinceDays = 0, videoId = '', maxAgeDays = 0, date = '', now = Date.now() } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const wanted = String(status || '').trim();
   const keyword = String(query || '').trim().toLowerCase();
   const wantedVideoId = String(videoId || '').trim().toLowerCase();
+  const wantedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || '').trim()) ? String(date).trim() : '';
   const days = Number(sinceDays);
-  const since = Number.isFinite(days) && days > 0 ? now - days * 86_400_000 : null;
+  const since = !wantedDate && Number.isFinite(days) && days > 0 ? now - days * 86_400_000 : null;
   const maxAge = Number(maxAgeDays);
-  const hiddenSince = Number.isFinite(maxAge) && maxAge > 0 ? now - maxAge * 86_400_000 : null;
+  const hiddenSince = !wantedDate && Number.isFinite(maxAge) && maxAge > 0 ? now - maxAge * 86_400_000 : null;
 
   let matched = list;
   if (wanted && wanted !== 'all') matched = matched.filter((row) => row.status === wanted);
@@ -76,6 +76,16 @@ export function filterCandidateRows(rows, { status = '', query = '', sinceDays =
       const at = Date.parse(row?.collectedAt || row?.updatedAt || '');
       if (!Number.isFinite(at)) return true;
       return at >= hiddenSince;
+    });
+  }
+  if (wantedDate) {
+    // 按“采集日期”筛选单日（本地时区）。老记录没有 collectedAt 时回退 updatedAt。
+    matched = matched.filter((row) => {
+      const at = Date.parse(row?.collectedAt || row?.updatedAt || '');
+      if (!Number.isFinite(at)) return false;
+      const d = new Date(at);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return key === wantedDate;
     });
   }
   if (since !== null) {
@@ -109,8 +119,6 @@ export function exportRowOf(row) {
     verdict: row?.judge?.verdict ?? '',
     ruleScore: numberCell(row?.judge?.ruleScore),
     modelScore: numberCell(row?.judge?.modelScore),
-    textScore: numberCell(row?.judge?.textScore),
-    coverScore: numberCell(row?.judge?.coverScore),
     archivedPath: file && existsSync(file) ? file : '',
     updatedAt: row?.updatedAt ?? '',
   };

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 export const PLUGIN_ROOT = dirname(fileURLToPath(import.meta.url));
 export const PLUGIN_NAME = 'dsh-tiktok-browser-local';
-export const PLUGIN_VERSION = '0.2.0';
+export const PLUGIN_VERSION = '0.2.4';
 export const LOCATION_VERSION = 1;
 
 function readLocation(baseDir) {

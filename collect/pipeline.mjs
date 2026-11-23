@@ -5,6 +5,7 @@ import { extractVideoDetail } from './extract.mjs';
 import { archiveCandidate } from './archive.mjs';
 import { CANDIDATE_STATUS } from './store.mjs';
 import { judgeCandidate } from './judge.mjs';
+import { aspectVerdict } from './judge-rule.mjs';
 import { detectLanguage, judgeLanguage } from '../services/language-detect.mjs';
 import { resolveDedupOptions, createDedupIndex, videoHash, textKey, evaluateCandidate } from '../services/dedup.mjs';
 import { isRetryableDownloadError } from '../services/retry.mjs';
@@ -198,6 +199,31 @@ export function applyLanguageFilter(candidate, contentLanguage = 'auto') {
 }
 
 /**
+ * 画幅硬性过滤：只保留 9:16 竖屏（宽/高 0.5625 ±3%），分辨率未知一律不通过。
+ * 纯函数，方便离线测试；不通过时调用方应在下载/判定前跳过。
+ * @param {object} candidate
+ * @returns {{candidate: object, skip: boolean, aspect: object}}
+ */
+export function applyAspectFilter(candidate) {
+  const aspect = aspectVerdict(candidate);
+  return {
+    candidate: {
+      ...candidate,
+      aspect: {
+        ok: aspect.ok,
+        known: aspect.known,
+        width: aspect.width,
+        height: aspect.height,
+        ratio: aspect.ratio,
+        reason: aspect.reason,
+      },
+    },
+    skip: !aspect.ok,
+    aspect,
+  };
+}
+
+/**
  * 运行一次关键词搜索采集。
  * @param {object} options
  * @param {import('playwright-core').Page} options.searchPage
@@ -215,6 +241,8 @@ export async function runSearch({
   config = {},
   query,
   limit,
+  // 目标模式：本次还需要多少个「成功归档」就达标；>0 时每处理完一条候选就检查一次，达标即停。
+  stopAfter = 0,
   detail = true,
   download = false,
   downloadsDir = null,
@@ -235,6 +263,7 @@ export async function runSearch({
 }) {
   const startedAt = Date.now();
   const maxResults = Math.max(1, Math.min(Number(limit) || Number(config?.search?.maxResultsPerKeyword) || 25, 200));
+  const goalRemaining = Math.max(0, Math.floor(Number(stopAfter) || 0));
   const minDelay = Number(config?.collect?.minDelayMs) || 800;
   const maxDelay = Number(config?.collect?.maxDelayMs) || 1500;
   const batchEvery = Number(config?.collect?.batchPauseEvery) || 20;
@@ -242,20 +271,12 @@ export async function runSearch({
   // auto（默认）：只记录检测结果；显式指定语言时才拦截。
   const contentLanguage = String(config?.search?.contentLanguage || 'auto').toLowerCase();
   // P1-6：批量采集只传 config、不传 judgeConfig，这里统一回退到 config.judge，
-  // 否则 tiktok_collect 这条主入口会让三层预筛静默失效。
+  // 否则 tiktok_collect 这条主入口会让规则预筛静默失效。
   const judgeOptions = resolveJudgeOptions(config, judgeConfig);
   // P2-7：默认走无水印（playAddr）；显式传 false 或配置 download.preferNoWatermark=false 才退回带水印地址。
   const noWatermark = preferNoWatermark === null
     ? config?.download?.preferNoWatermark !== false
     : preferNoWatermark !== false;
-  // P1-6 封面粗筛：开启时才抓封面，失败回退正式判定。
-  const coverPrefilter =
-    judgeOptions.coverPrefilter === true ||
-    ['on', 'true', '1'].includes(String(judgeOptions.coverPrefilter || '').toLowerCase());
-  // P1-6 文本预筛：开启时先用文案/话题问文本模型，低分直接拒绝。
-  const textPrefilter =
-    judgeOptions.textPrefilter === true ||
-    ['on', 'true', '1'].includes(String(judgeOptions.textPrefilter || '').toLowerCase());
   // P2-1 素材去重：默认 off；开启后下载前看文案、下载后看指纹，命中即标 duplicate。
   const dedupOptions = resolveDedupOptions(config);
   const dedup = dedupIndex
@@ -275,9 +296,12 @@ export async function runSearch({
     scored: 0,
     accepted: 0,
     rejected: 0,
+    // 与 accepted 分开：目标数量只认实际归档成功，下载失败即使判定通过也不计数。
+    succeeded: 0,
     archived: [],
     skippedSeen: 0,
     skippedLanguage: 0,
+    skippedAspect: 0,
     duplicateSkipped: 0,
     duplicateChecked: 0,
     duplicateHashFailed: 0,
@@ -285,21 +309,18 @@ export async function runSearch({
     retryExhausted: 0,
     prefilterSkipped: 0,
     prefilterTokensSaved: 0,
-    coverChecked: 0,
-    coverSkipped: 0,
-    coverUnavailable: 0,
-    coverTokensSaved: 0,
-    textChecked: 0,
-    textSkipped: 0,
-    textTokensSaved: 0,
     halted: false,
     budgetExhausted: false,
     manualDownloadRequired: false,
+    targetReached: false,
     code: null,
     message: null,
     candidates: [],
     durationMs: 0,
   };
+
+  // 成功 = 判定开启时通过判定且已归档，判定关闭时下载归档成功。
+  const successCount = () => summary.succeeded;
 
   const target = searchUrl(query);
   if (!isAllowedUrl(target)) {
@@ -367,6 +388,11 @@ export async function runSearch({
   const videoPage = await getPage('video');
   for (let index = 0; index < freshCards.length; index += 1) {
     signal?.throwIfAborted?.();
+    // 目标模式：已达标就不再处理后面的候选，避免多下载。
+    if (goalRemaining > 0 && successCount() >= goalRemaining) {
+      summary.targetReached = true;
+      break;
+    }
     const card = freshCards[index];
 
     const signals = await readSignals(videoPage);
@@ -402,6 +428,23 @@ export async function runSearch({
         store.upsertCandidate(candidate);
         summary.extracted += 1;
         summary.skippedLanguage += 1;
+        summary.candidates.push(candidate);
+        if (batchEvery > 0 && (index + 1) % batchEvery === 0 && index + 1 < freshCards.length) {
+          await sleep(batchPauseMs);
+        } else {
+          await sleep(randomBetween(minDelay, maxDelay));
+        }
+        continue;
+      }
+
+      // 画幅硬性要求：只收 9:16 竖屏。不符合（含分辨率未知）直接留记录，不下载、不判定。
+      const aspectResult = applyAspectFilter(candidate);
+      candidate = aspectResult.candidate;
+      if (aspectResult.skip) {
+        candidate = { ...candidate, status: CANDIDATE_STATUS.SKIPPED_ASPECT, aspectCheckedAt: new Date().toISOString() };
+        store.upsertCandidate(candidate);
+        summary.extracted += 1;
+        summary.skippedAspect += 1;
         summary.candidates.push(candidate);
         if (batchEvery > 0 && (index + 1) % batchEvery === 0 && index + 1 < freshCards.length) {
           await sleep(batchPauseMs);
@@ -485,6 +528,7 @@ export async function runSearch({
             },
           };
           summary.downloaded += 1;
+          if (!judge) summary.succeeded += 1;
           // P2-3：下载成功即出队（之前失败过的条目不再重试）。
           retryQueue?.resolve(candidate.videoId, { ok: true });
           summary.archived.push({
@@ -570,6 +614,7 @@ export async function runSearch({
             store.upsertCandidate(candidate);
             summary.duplicateSkipped += 1;
             summary.downloaded -= 1;
+            if (!judge) summary.succeeded -= 1;
             summary.extracted += 1;
             summary.candidates.push(candidate);
             continue;
@@ -602,7 +647,6 @@ export async function runSearch({
           config: { judge: judgeOptions },
           paths: judgePaths,
           videoPath: candidate.archive?.file || null,
-          page: videoPage,
           api: judgeApi,
           modelGateway,
           budget,
@@ -610,25 +654,10 @@ export async function runSearch({
           logger,
         });
         summary.scored += 1;
-        if (textPrefilter && verdict.ok) {
-          summary.textChecked += 1;
-        }
-        if (coverPrefilter && verdict.ok) {
-          summary.coverChecked += 1;
-          if (verdict.coverScore === null || verdict.coverScore === undefined) summary.coverUnavailable += 1;
-        }
-        // P1-6：规则预筛/文本预筛/封面粗筛直接拒绝，不抽帧或不调完整模型；与 rejected 一样删文件删记录。
+        // P1-6：规则预筛直接拒绝，不抽帧或不调完整模型；与 rejected 一样删文件删记录。
         if (verdict.ok && verdict.prefiltered) {
-          if (verdict.prefilter === 'cover') {
-            summary.coverSkipped += 1;
-            summary.coverTokensSaved += verdict.estimatedTokensSaved || 0;
-          } else if (verdict.prefilter === 'text') {
-            summary.textSkipped += 1;
-            summary.textTokensSaved += verdict.estimatedTokensSaved || 0;
-          } else {
-            summary.prefilterSkipped += 1;
-            summary.prefilterTokensSaved += verdict.estimatedTokensSaved || 0;
-          }
+          summary.prefilterSkipped += 1;
+          summary.prefilterTokensSaved += verdict.estimatedTokensSaved || 0;
           summary.rejected += 1;
           // 清理失败只记警告不中断批次：单条素材回收站/删除失败不应炸掉整个 runSearch。
           try {
@@ -659,24 +688,18 @@ export async function runSearch({
               modelScore: verdict.modelScore,
               reasons: verdict.reasons,
               tags: verdict.tags,
-              coverScore: verdict.coverScore ?? null,
-              coverNote: verdict.coverNote || null,
-              textScore: verdict.textScore ?? null,
-              textNote: verdict.textNote || null,
               threshold: verdict.threshold,
               coldStart: verdict.coldStart,
               profileId: judgeProfile?.id || null,
             },
-            // P2-6：画面文字与卖点存在候选本身，方便导出/筛选；没有就保持原样。
-            ...(verdict.onScreenText ? { onScreenText: verdict.onScreenText } : {}),
-            ...(Array.isArray(verdict.sellingPoints) && verdict.sellingPoints.length
-              ? { sellingPoints: verdict.sellingPoints }
-              : {}),
           };
           if (verdict.verdict === 'accepted') {
             summary.accepted += 1;
-            // 判通过即置 ACCEPTED：download=false 时素材无归档文件，仍应走到终态而不是停在 extracted。
-            candidate.status = CANDIDATE_STATUS.ACCEPTED;
+            if (candidate.archive?.file) {
+              summary.succeeded += 1;
+              candidate.status = CANDIDATE_STATUS.ACCEPTED;
+            }
+            // 下载失败或 download=false 时保留原状态，不能伪装成成功归档。
           } else {
             summary.rejected += 1;
             // 被拒素材不留任何文件与记录：删视频、删同名 sidecar、清候选行；清理失败只记警告不中断批次。
@@ -697,6 +720,11 @@ export async function runSearch({
       store.upsertCandidate(candidate);
       summary.extracted += 1;
       summary.candidates.push(candidate);
+      // 目标模式：这条已成功归档（accepted 或 downloaded），够了就停。
+      if (goalRemaining > 0 && successCount() >= goalRemaining) {
+        summary.targetReached = true;
+        break;
+      }
     } else {
       store.upsertCandidate({
         videoId: card.videoId,
@@ -732,8 +760,10 @@ export async function runSearch({
     extracted: summary.extracted,
     failed: summary.failed,
     downloaded: summary.downloaded,
+    succeeded: summary.succeeded,
     downloadFailed: summary.downloadFailed,
     skippedLanguage: summary.skippedLanguage,
+    skippedAspect: summary.skippedAspect,
     duplicateSkipped: summary.duplicateSkipped,
     duplicateChecked: summary.duplicateChecked,
     duplicateHashFailed: summary.duplicateHashFailed,
@@ -741,13 +771,6 @@ export async function runSearch({
     retryExhausted: summary.retryExhausted,
     prefilterSkipped: summary.prefilterSkipped,
     prefilterTokensSaved: summary.prefilterTokensSaved,
-    coverChecked: summary.coverChecked,
-    coverSkipped: summary.coverSkipped,
-    coverUnavailable: summary.coverUnavailable,
-    coverTokensSaved: summary.coverTokensSaved,
-    textChecked: summary.textChecked,
-    textSkipped: summary.textSkipped,
-    textTokensSaved: summary.textTokensSaved,
     halted: summary.halted,
     durationMs: summary.durationMs,
   });

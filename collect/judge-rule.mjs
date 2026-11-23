@@ -6,6 +6,39 @@ const DURATION_MAX = 30;
 const DURATION_SOFT_MIN = 8;
 const DURATION_SOFT_MAX = 45;
 
+// 画幅硬性要求：只收 9:16 竖屏。宽/高目标 0.5625，允许 ±3% 容差
+// （约 0.5456–0.5794，覆盖 1080x1920 / 720x1280 及少量编码取整偏差）。
+export const ASPECT_TARGET = 9 / 16;
+export const ASPECT_TOLERANCE = 0.03;
+const ASPECT_MIN = ASPECT_TARGET * (1 - ASPECT_TOLERANCE);
+const ASPECT_MAX = ASPECT_TARGET * (1 + ASPECT_TOLERANCE);
+
+/**
+ * 判定候选作品画幅是否严格符合 9:16 竖屏。
+ * 分辨率未知（DOM 兜底通道拿不到 width/height）时按「不通过」处理，宁缺毋滥。
+ * @param {object} candidate
+ * @returns {{ok:boolean, known:boolean, width:number|null, height:number|null, ratio:number|null, reason:string|null}}
+ */
+export function aspectVerdict(candidate) {
+  const width = Number(candidate?.video?.width);
+  const height = Number(candidate?.video?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { ok: false, known: false, width: null, height: null, ratio: null, reason: '分辨率未知，无法确认 9:16 竖屏' };
+  }
+  const ratio = width / height;
+  if (ratio < ASPECT_MIN || ratio > ASPECT_MAX) {
+    return {
+      ok: false,
+      known: true,
+      width,
+      height,
+      ratio: Number(ratio.toFixed(4)),
+      reason: `画幅 ${width}x${height}（比例 ${ratio.toFixed(3)}）不是 9:16 竖屏`,
+    };
+  }
+  return { ok: true, known: true, width, height, ratio: Number(ratio.toFixed(4)), reason: null };
+}
+
 function normalize(text) {
   return String(text || '').toLowerCase();
 }
@@ -89,20 +122,16 @@ export function ruleScore(candidate, profile) {
     }
   }
 
-  // 5) 竖屏：9:16 加分，横屏扣分
-  const width = Number(candidate?.video?.width);
-  const height = Number(candidate?.video?.height);
-  if (width > 0 && height > 0) {
-    const ratio = width / height;
-    detail.aspect = Number(ratio.toFixed(3));
-    if (ratio < 0.75) {
-      score += 6;
-      reasons.push(`竖屏 ${width}x${height}，适配短视频投放（+6）`);
-      tags.push('竖屏');
-    } else if (ratio > 1.2) {
-      score -= 8;
-      reasons.push(`横屏 ${width}x${height}，不适合竖版投放（-8）`);
-    }
+  // 5) 画幅：只认 9:16 竖屏（硬性要求，不通过直接一票否决）
+  const aspect = aspectVerdict(candidate);
+  detail.aspect = aspect.known ? aspect.ratio : null;
+  detail.aspectOk = aspect.ok;
+  if (aspect.ok) {
+    score += 6;
+    reasons.push(`竖屏 ${aspect.width}x${aspect.height}，符合 9:16（+6）`);
+    tags.push('竖屏');
+  } else {
+    reasons.push(aspect.reason);
   }
 
   // 6) mustNot 一票否决
@@ -114,6 +143,13 @@ export function ruleScore(candidate, profile) {
     veto = true;
     vetoReason = `命中一票否决项：${mustNotHits.slice(0, 3).join('、')}`;
     reasons.push(vetoReason);
+    score = 0;
+  }
+
+  // 7) 画幅硬性要求：非 9:16 竖屏或分辨率未知，一律一票否决
+  if (!aspect.ok) {
+    veto = true;
+    vetoReason = vetoReason ? `${vetoReason}；${aspect.reason}` : aspect.reason;
     score = 0;
   }
 

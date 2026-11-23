@@ -23,7 +23,11 @@ const FIELDS = Object.freeze({
   'search.maxResultsPerKeyword': { kind: 'integer', min: 1, max: 200, allowEmpty: true },
   'search.tokenBudget': { kind: 'integer', min: 1, max: 1_000_000_000, allowEmpty: true },
   'search.dailyTokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000, allowEmpty: true },
-  'search.targetCount': { kind: 'integer', min: 3, max: 30, allowEmpty: true },
+  // 0 = 不扩展关键词（只用种子词，不调用模型）。
+  'search.targetCount': { kind: 'integer', min: 0, max: 30, allowEmpty: true },
+  // 本次采集数量：>0 时按「成功归档数」采集，采满即停，每词不设条数上限；
+  // 0/留空 = 沿用「关键词数 × 每词条数」的旧行为。
+  'search.targetVideos': { kind: 'integer', min: 0, max: 200, allowEmpty: true },
   'search.queryLanguage': { kind: 'string' },
   'search.contentLanguage': { kind: 'string' },
   'search.expansionEnabled': { kind: 'boolean' },
@@ -39,10 +43,6 @@ const FIELDS = Object.freeze({
   'judge.threshold': { kind: 'number', min: 0, max: 100 },
   'judge.modelWeight': { kind: 'number', min: 0, max: 1 },
   'judge.prefilter': { kind: 'enum', values: ['off', 'rule'] },
-  'judge.coverPrefilter': { kind: 'boolean' },
-  'judge.textPrefilter': { kind: 'boolean' },
-  // P2-6 卖点提取：默认 off，单条约 800 token。
-  'judge.sellingPoints': { kind: 'boolean' },
   // P2-1 素材去重：默认 off，阈值可调。
   'dedup.enabled': { kind: 'boolean' },
   'dedup.videoDistance': { kind: 'integer', min: 0, max: 64, allowEmpty: true },
