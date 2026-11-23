@@ -182,9 +182,9 @@ test('自检识别固定系统代理和 PAC，不再误报手动地址为空', a
   assert.match(pac.checks.find((item) => item.id === 'proxy-connectivity').detail, /PAC/);
 });
 
-test('发布包包含系统代理模块且版本为 v0.2.4', async () => {
+test('发布包包含系统代理模块且版本为 v0.2.5', async () => {
   const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(packageJson.version, '0.2.4');
+  assert.equal(packageJson.version, '0.2.5');
   assert.equal(packageJson.dsh.bundle.files.includes('services/system-proxy.mjs'), true);
   for (const file of packageJson.dsh.bundle.files) {
     assert.equal(existsSync(new URL(`../${file}`, import.meta.url)), true, `发布包缺少文件：${file}`);
