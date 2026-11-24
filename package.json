@@ -1,6 +1,6 @@
 {
   "name": "dsh-tiktok-browser-local",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "description": "DSH 原生 TikTok 关键词素材采集工具（只读浏览 + 下载归档）",
   "author": "ZIO-sys",
@@ -26,6 +26,9 @@
     "dsh": ">=0.2.0-rc.2 <0.2.1-0 || >=0.2.1-rc.2 <0.3.0-0"
   },
   "main": "dsh-plugin.mjs",
+  "dependencies": {
+    "playwright-core": ">=1.44.0 <2"
+  },
   "scripts": {
     "test": "node --test tests/regression.test.mjs tests/aspect.test.mjs tests/release-0.2.4.test.mjs"
   },

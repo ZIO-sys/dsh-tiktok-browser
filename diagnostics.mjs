@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import process from 'node:process';
 
 import { probeEdgeInstallation, readBrowserState, BROWSER_ERROR_CODES } from './browser-host.mjs';
+import { probePlaywrightRuntime } from './playwright-runtime.mjs';
 import { findPageByRole } from './browser-pages.mjs';
 import { readPageSignals } from './browser-launcher.mjs';
 import { checkProxy, resolveProxyConfig, PROXY_ERROR_CODES } from './proxy-check.mjs';
@@ -122,7 +123,20 @@ export function describeNode(env = process.env) {
 }
 
 export function describeEdge(probe = probeEdgeInstallation) {
-  const result = probe();
+  let result;
+  try {
+    result = probe();
+  } catch (error) {
+    // 依赖缺失（例如 playwright-core 未装）不应让设置页自检整体失败
+    return {
+      id: 'edge',
+      label: 'Microsoft Edge 安装',
+      ok: false,
+      code: 'EDGE_PROBE_FAILED',
+      detail: String(error?.message || error).split('\n')[0] || 'Edge 探测失败',
+      fix: '请确认系统已安装 Microsoft Edge，并在插件设置里重新运行自检。',
+    };
+  }
   return {
     id: 'edge',
     label: 'Microsoft Edge 安装',
@@ -130,6 +144,25 @@ export function describeEdge(probe = probeEdgeInstallation) {
     code: result.ok ? null : BROWSER_ERROR_CODES.MISSING,
     detail: result.ok ? result.path : '未找到 msedge.exe',
     fix: result.ok ? null : '请安装 Microsoft Edge（本插件用系统 Edge 打开专用窗口）。',
+  };
+}
+
+export function describePlaywright(probe = probePlaywrightRuntime) {
+  let result;
+  try {
+    result = probe();
+  } catch (error) {
+    result = { ok: false, detail: String(error?.message || error).split('\n')[0], code: 'PLAYWRIGHT_CORE_MISSING' };
+  }
+  return {
+    id: 'playwright',
+    label: '浏览器驱动 playwright-core',
+    ok: Boolean(result.ok),
+    code: result.ok ? null : result.code || 'PLAYWRIGHT_CORE_MISSING',
+    detail: result.detail || (result.ok ? '已就绪' : '未找到'),
+    fix: result.ok
+      ? null
+      : '在 DSH 插件管理里重新安装本插件（会自动安装依赖），或在 DSH 的 profile 目录执行 pnpm add playwright-core。',
   };
 }
 
@@ -246,7 +279,13 @@ export async function runDiagnostics({
     : resolveProxyConfig(config, env);
   const proxyConfigCheck = mode === 'system' ? describeSystemProxyConfig(system) : describeProxyConfig(proxy);
   const state = paths?.browserControlDir ? readState(paths.browserControlDir) : null;
-  const checks = [describeNode(env), describeEdge(probe), proxyConfigCheck, describeBrowserState(state)];
+  const checks = [
+    describeNode(env),
+    describePlaywright(),
+    describeEdge(probe),
+    proxyConfigCheck,
+    describeBrowserState(state),
+  ];
 
   const proxyConnectivity = mode === 'system' && system?.pacUrl && !system?.server
     ? { ok: true, note: '系统代理使用 PAC 脚本，连通性由浏览器处理。' }

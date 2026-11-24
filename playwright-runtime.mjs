@@ -84,11 +84,55 @@ function loadPlaywright() {
   }
 
   debugLog(`FAILED attempts=${JSON.stringify(attempts)}`);
-  throw new Error(
-    `playwright-core 未找到。已尝试：\n${attempts.join('\n')}\n请确认 DSH 的 profile 已安装 playwright-core。`,
+  const error = new Error(
+    `playwright-core 未找到，插件无法启动浏览器。已尝试：\n${attempts.join('\n')}\n`
+      + '修复办法（任选其一）：\n'
+      + '  1) 在 DSH 插件管理里重新安装本插件，让包管理器自动装上依赖；\n'
+      + '  2) 在 DSH 的 profile 目录执行：pnpm add playwright-core；\n'
+      + '  3) 若用本地目录方式安装，请在该目录执行 pnpm install。',
   );
+  error.code = 'PLAYWRIGHT_CORE_MISSING';
+  throw error;
 }
 
-const playwright = loadPlaywright();
+let cached = null;
 
-export const { chromium } = playwright;
+/** 惰性解析 playwright-core：只有真正要用浏览器时才加载。 */
+function playwright() {
+  if (!cached) cached = loadPlaywright();
+  return cached;
+}
+
+/**
+ * 惰性代理：模块加载阶段不解析 playwright-core，避免依赖缺失时整个插件
+ * （含设置页与自检）都注册不上。首次访问 chromium 的方法时才真正加载，
+ * 失败会抛出 code=PLAYWRIGHT_CORE_MISSING 的可操作错误。
+ */
+export const chromium = new Proxy({}, {
+  get(_target, property) {
+    const mod = playwright();
+    const value = mod.chromium[property];
+    return typeof value === 'function' ? value.bind(mod.chromium) : value;
+  },
+  has(_target, property) {
+    return property in playwright().chromium;
+  },
+});
+
+/**
+ * 自检用：不抛错地探测 playwright-core 是否可用。
+ * 返回 { ok, detail, code }，供 diagnostics 展示可操作的修复提示。
+ */
+export function probePlaywrightRuntime() {
+  try {
+    const mod = playwright();
+    const version = mod?._playwright?.version || mod?.chromium?.name?.() || '已加载';
+    return { ok: true, detail: `playwright-core ${version}`, code: null };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: String(error?.message || error).split('\n')[0] || 'playwright-core 未找到',
+      code: error?.code || 'PLAYWRIGHT_CORE_MISSING',
+    };
+  }
+}
