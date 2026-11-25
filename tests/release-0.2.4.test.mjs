@@ -401,7 +401,7 @@ test('删除画像级联清理所属样例和历史，且不越界删除库外�
 
 test('发布清单删除旧预筛和观看兴趣模块，并包含 LICENSE 与全部测试', () => {
   const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(packageJson.version, '0.2.6');
+  assert.equal(packageJson.version, '0.2.7');
   for (const removed of ['collect/cover.mjs', 'services/selling-points.mjs', 'services/interest-profile.mjs']) {
     assert.equal(packageJson.dsh.bundle.files.includes(removed), false);
     assert.equal(existsSync(new URL(`../${removed}`, import.meta.url)), false);
