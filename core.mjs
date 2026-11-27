@@ -156,10 +156,13 @@ export class BrowserController {
     const daily = this.dailyBudgetStatus();
     const task = configuredNumber(this.#config?.search?.tokenBudget, DEFAULT_TASK_TOKEN_BUDGET);
     const taskLimit = Number.isSafeInteger(task) && task > 0 ? task : null;
-    if (!daily.enabled && taskLimit == null) return null;
+    const ledgerPath = join(this.#paths.stateDir, 'token-usage.jsonl');
+    // 本次任务上限填 0（= 不限）且每日上限也未启用：返回不设上限的预算对象。
+    // 这里若返回 null，调用方会回落到 DEFAULT_TASK_TOKEN_BUDGET（50000），0 = 不限就会失效。
+    if (!daily.enabled && taskLimit == null) return createTokenBudget({ limit: Infinity, ledgerPath });
     // 每日上限更小时以每日为准；剩余为 0 时用 1 兜底，真正的拦截由调用前的 #dailyBudgetBlocked() 完成。
     const limit = daily.enabled ? Math.max(1, daily.effectiveLimit) : taskLimit;
-    return createTokenBudget({ limit, ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl') });
+    return createTokenBudget({ limit, ledgerPath });
   }
 
   #downloader() {
@@ -664,7 +667,7 @@ export class BrowserController {
     return createStore({ stateDir: this.#paths.stateDir, controlDir: this.#paths.browserControlDir });
   }
 
-  async search({ query = '', limit, detail = true, download = false, preferNoWatermark = null, judge = false, profileId = null, signal } = {}) {
+  async search({ query = '', limit, detail = true, download = false, preferNoWatermark = null, judge = false, profileId = null, stopAfter = 0, onItem = null, signal } = {}) {
     const text = String(query || '').trim();
     if (!text) {
       return { ok: false, code: 'INVALID_ARGUMENT', message: '关键词不能为空。' };
@@ -712,6 +715,8 @@ export class BrowserController {
       config: this.#config,
       query: text,
       limit,
+      stopAfter,
+      onItem,
       detail,
       download,
       downloadsDir: this.#paths.downloadsDir,
@@ -1049,7 +1054,7 @@ export class BrowserController {
   }
 
   /**
-   * 在资源管理器里定位文件。只接受归档目录、样例库、日报目录内的真实文件，
+   * 在资源管理器里定位文件。只接受归档目录、样例库、日报目录或导出目录内的真实文件，
    * `resolve` 之后再校验，挡住 `..` 和绝对路径穿越。
    */
   revealPath({ file = '', scope = 'any' } = {}) {
@@ -1062,7 +1067,7 @@ export class BrowserController {
     const reportsDir = resolve(this.#paths.stateDir, 'reports');
     const exportsDir = resolve(this.#paths.stateDir, 'exports');
     const roots = scope === 'reports'
-      ? [reportsDir]
+      ? [reportsDir, exportsDir]
       : [resolve(this.#paths.downloadsDir), resolve(this.#paths.libraryDir), reportsDir, exportsDir];
     const fold = (value) => (process.platform === 'win32' ? value.toLowerCase() : value);
     const inside = roots.some((root) => {
@@ -1070,7 +1075,7 @@ export class BrowserController {
       return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel);
     });
     if (!inside) {
-      return { ok: false, code: 'PATH_NOT_ALLOWED', message: '只允许打开归档目录、样例库或日报目录内的文件。' };
+      return { ok: false, code: 'PATH_NOT_ALLOWED', message: '只允许打开归档目录、样例库、日报目录或导出目录内的文件。' };
     }
     if (!existsSync(resolved)) return { ok: false, code: 'FILE_MISSING', message: '文件不存在或已被移动。' };
 
@@ -1272,10 +1277,8 @@ export class BrowserController {
     const skipExpansion = Number(targetCount) === 0;
     const dailyBlocked = skipExpansion ? null : this.#dailyBudgetBlocked();
     if (dailyBlocked) return dailyBlocked;
-    const budget = skipExpansion ? null : (this.#tokenBudget() || createTokenBudget({
-      limit: 50_000,
-      ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl'),
-    }));
+    // #tokenBudget() 始终返回预算对象（不设上限时为 Infinity），不再回落到 50000 默认值。
+    const budget = skipExpansion ? null : this.#tokenBudget();
     const result = await expandKeywords({
       seeds: cleanSeeds,
       targetCount,
@@ -1312,10 +1315,8 @@ export class BrowserController {
     if (!cleanSeeds.length) return { ok: false, code: 'INVALID_ARGUMENT', message: '至少填写一个种子词。' };
     const dailyBlocked = this.#dailyBudgetBlocked();
     if (dailyBlocked) return dailyBlocked;
-    const budget = this.#tokenBudget() || createTokenBudget({
-      limit: 50_000,
-      ledgerPath: join(this.#paths.stateDir, 'token-usage.jsonl'),
-    });
+    // #tokenBudget() 始终返回预算对象（不设上限时为 Infinity），不再回落到 50000 默认值。
+    const budget = this.#tokenBudget();
     const modelGateway = this.#modelGateway();
     const downloadManager = this.#downloader();
     const expansion = await expandKeywords({
@@ -1640,6 +1641,7 @@ export class BrowserController {
           query: args.query,
           limit: args.limit,
           stopAfter: args.stopAfter,
+          onItem: args.onItem,
           detail: true,
           download: args.download,
           downloadsDir: this.#paths.downloadsDir,
