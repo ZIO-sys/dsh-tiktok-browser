@@ -532,6 +532,8 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
         challenges: Array.isArray(sidecar.challenges) ? sidecar.challenges : [],
         stats: sidecar.stats || null,
         url: sidecar.url || '',
+        width: Number(sidecar?.video?.width) || null,
+        height: Number(sidecar?.video?.height) || null,
       },
       features,
       featureError,
@@ -670,8 +672,13 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
       .filter((entry) => entry.endsWith('.json'))
       .map((entry) => join(interestDir, entry));
 
+    const purgeRoot = resolve(libraryDir);
+    const inPurgeRoot = (file) => {
+      const rel = relative(purgeRoot, resolve(String(file)));
+      return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel);
+    };
     const sampleFiles = new Set();
-    for (const row of index.samples) if (row?.file) sampleFiles.add(String(row.file));
+    for (const row of index.samples) if (row?.file && inPurgeRoot(row.file)) sampleFiles.add(String(row.file));
     for (const entry of readdirSyncSafe(samplesDir)) sampleFiles.add(join(samplesDir, entry));
 
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -690,6 +697,7 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
     let removedBytes = 0;
     const removeFile = (file) => {
       try {
+        if (!inPurgeRoot(file)) return false;
         if (!existsSync(file)) return false;
         const stat = statSync(file);
         if (!stat.isFile()) return false;
@@ -1070,8 +1078,10 @@ export function createLibrary({ libraryDir, env = process.env, modelGateway = nu
         author: { uniqueId: sample.meta?.author || '' },
         challenges: sample.meta?.challenges || [],
         duration: sample.meta?.duration || 0,
+        video: { width: sample.meta?.width, height: sample.meta?.height },
       },
       profile,
+      { enforceAspect: false },
     ).ruleScore;
     const rows = (withText.length >= 3 ? withText : pool).map(scoreOf);
     const negativeRows = negativePool.map(scoreOf);
