@@ -30,8 +30,9 @@ export class TokenBudget {
   #operations = [];
 
   constructor({ limit, estimateText = defaultEstimateText, ledgerPath = null } = {}) {
-    if (!Number.isInteger(limit) || limit <= 0) {
-      throw new TypeError('limit 必须是正整数。');
+    // limit 传 Infinity 表示不设上限（设置页 0 = 不限），此时 reserve 永不因预算抛错。
+    if (!(limit === Infinity || (Number.isInteger(limit) && limit > 0))) {
+      throw new TypeError('limit 必须是正整数或 Infinity（不限）。');
     }
     if (typeof estimateText !== 'function') {
       throw new TypeError('estimateText 必须是函数。');
@@ -110,11 +111,13 @@ export class TokenBudget {
   }
 
   state() {
+    const unlimited = this.#limit === Infinity;
     return {
-      limit: this.#limit,
+      limit: unlimited ? null : this.#limit,
+      unlimited,
       reserved: this.#reserved,
       used: this.#used,
-      remaining: this.#remaining(),
+      remaining: unlimited ? null : this.#remaining(),
       estimated: this.#estimated,
       operations: this.#operations.map((record) => {
         const { metadata, ...summary } = record;
@@ -124,6 +127,7 @@ export class TokenBudget {
   }
 
   #remaining() {
+    if (this.#limit === Infinity) return Infinity;
     return Math.max(0, this.#limit - this.#used - this.#reserved);
   }
 
