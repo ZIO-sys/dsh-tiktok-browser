@@ -95,19 +95,43 @@ export async function runCollect({
 
   const target = goalMode ? goal : list.length * Math.max(0, Number(maxPerRun) || 0);
   let round = 0;
-  const report = (index, keyword) => {
+  // live：当前关键词正在处理时的实时计数（pipeline 每处理完一条推一次）。
+  // 不并入 totals，只用于让设置页在关键词跑完之前就能看到进度。
+  const report = (index, keyword, live = null) => {
     if (typeof onProgress !== 'function') return;
     try {
       totals.succeeded = succeededCount();
+      const shown = { ...totals };
+      if (live) {
+        for (const key of [
+          'found',
+          'fresh',
+          'extracted',
+          'failed',
+          'downloaded',
+          'downloadFailed',
+          'scored',
+          'accepted',
+          'rejected',
+          'succeeded',
+          'skippedSeen',
+          'skippedLanguage',
+          'skippedAspect',
+          'duplicateSkipped',
+        ]) {
+          shown[key] = Number(totals[key] || 0) + Number(live[key] || 0);
+        }
+      }
       onProgress({
         index,
         total: list.length,
         round: round + 1,
         keyword: keyword || null,
-        found: goalMode ? totals.succeeded : totals.found,
+        found: goalMode ? shown.succeeded : shown.found,
         target,
-        succeeded: totals.succeeded,
-        totals: { ...totals },
+        succeeded: shown.succeeded,
+        totals: shown,
+        current: live ? { index: Number(live.index) || 0, total: Number(live.total) || 0, keyword: live.query || keyword || null } : null,
         at: new Date().toISOString(),
       });
     } catch {
@@ -147,6 +171,7 @@ export async function runCollect({
           query: keyword,
           limit: perKeywordLimit,
           stopAfter: goalMode ? Math.max(1, goal - succeededCount()) : undefined,
+          onItem: (progress) => report(i + 1, keyword, progress),
           detail: true,
           download,
           judge,
