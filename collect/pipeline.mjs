@@ -243,6 +243,8 @@ export async function runSearch({
   limit,
   // 目标模式：本次还需要多少个「成功归档」就达标；>0 时每处理完一条候选就检查一次，达标即停。
   stopAfter = 0,
+  // 每处理完一条候选就回调一次实时计数，供批量采集把进度推给设置页。
+  onItem = null,
   detail = true,
   download = false,
   downloadsDir = null,
@@ -322,6 +324,38 @@ export async function runSearch({
   // 成功 = 判定开启时通过判定且已归档，判定关闭时下载归档成功。
   const successCount = () => summary.succeeded;
 
+  // 逐条进度快照：批量采集靠它把「已处理/已成功」实时推到设置页。
+  const emitItem = (done, total) => {
+    if (typeof onItem !== 'function') return;
+    try {
+      onItem({
+        query,
+        index: done,
+        total,
+        found: summary.found,
+        fresh: summary.fresh,
+        extracted: summary.extracted,
+        failed: summary.failed,
+        downloaded: summary.downloaded,
+        downloadFailed: summary.downloadFailed,
+        scored: summary.scored,
+        accepted: summary.accepted,
+        rejected: summary.rejected,
+        succeeded: summary.succeeded,
+        skippedSeen: summary.skippedSeen,
+        skippedLanguage: summary.skippedLanguage,
+        skippedAspect: summary.skippedAspect,
+        duplicateSkipped: summary.duplicateSkipped,
+        halted: summary.halted,
+        budgetExhausted: summary.budgetExhausted,
+        manualDownloadRequired: summary.manualDownloadRequired,
+        targetReached: summary.targetReached,
+      });
+    } catch {
+      // 进度回调异常不能影响采集本身
+    }
+  };
+
   const target = searchUrl(query);
   if (!isAllowedUrl(target)) {
     summary.code = 'INVALID_URL';
@@ -387,6 +421,7 @@ export async function runSearch({
 
   const videoPage = await getPage('video');
   for (let index = 0; index < freshCards.length; index += 1) {
+    try {
     signal?.throwIfAborted?.();
     // 目标模式：已达标就不再处理后面的候选，避免多下载。
     if (goalRemaining > 0 && successCount() >= goalRemaining) {
@@ -742,6 +777,10 @@ export async function runSearch({
       await sleep(batchPauseMs);
     } else {
       await sleep(randomBetween(minDelay, maxDelay));
+    }
+    } finally {
+      // 这条候选无论是成功、跳过还是失败，都把最新计数推出去（continue/break 也会走到这里）。
+      emitItem(index + 1, freshCards.length);
     }
   }
 
