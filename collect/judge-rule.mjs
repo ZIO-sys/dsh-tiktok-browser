@@ -59,7 +59,8 @@ function hitsAny(haystack, needles) {
  * @param {object} profile 画像卡（mustHave/niceToHave/mustNot/keywords/guidance/durationRange）
  * @returns {{ok:boolean, ruleScore:number, reasons:string[], tags:string[], veto:boolean, vetoReason:string|null, detail:object}}
  */
-export function ruleScore(candidate, profile) {
+export function ruleScore(candidate, profile, options = {}) {
+  const enforceAspect = options?.enforceAspect !== false;
   const reasons = [];
   const tags = [];
   const detail = { keywordHits: [], mustHaveHits: [], niceToHaveHits: [], mustNotHits: [], duration: null, aspect: null };
@@ -147,7 +148,9 @@ export function ruleScore(candidate, profile) {
   }
 
   // 7) 画幅硬性要求：非 9:16 竖屏或分辨率未知，一律一票否决
-  if (!aspect.ok) {
+  // 画幅否决只在「启用画幅强制」或「分辨率已知且不合格」时生效；
+  // 校准场景传 enforceAspect:false，让分辨率未知的样例仍能参与打分，否则分数恒 0、校准失效。
+  if (!aspect.ok && (enforceAspect || aspect.known)) {
     veto = true;
     vetoReason = vetoReason ? `${vetoReason}；${aspect.reason}` : aspect.reason;
     score = 0;
