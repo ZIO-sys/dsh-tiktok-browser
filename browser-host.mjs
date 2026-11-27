@@ -282,7 +282,7 @@ export function classifyBrowserLaunchError(error) {
 
 export function sanitizeBrowserFailure(text) {
   return String(text || '')
-    .replace(/([?&](?:token|cookie|session|auth)[^&\s]*)/gi, '$1=***')
+    .replace(/([?&])([^=&\s]*(?:token|cookie|session|auth)[^=&\s]*)=[^&\s]*/gi, '$1$2=***')
     .replace(/Bearer\s+[A-Za-z0-9._-]+/g, 'Bearer ***')
     .replace(/[A-Za-z]:\\[^\s"']+/g, '<local-path>');
 }
