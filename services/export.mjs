@@ -126,8 +126,10 @@ export function exportRowOf(row) {
 
 /** CSV 单元格转义：含逗号/引号/换行/前后空格时加引号，内部引号翻倍。 */
 export function csvCell(value) {
-  const text = value === null || value === undefined ? '' : String(value);
+  let text = value === null || value === undefined ? '' : String(value);
   if (text === '') return '';
+  // 防 CSV 公式注入：以 = + - @ Tab CR 开头的单元格前加单引号。
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (/[",\r\n]/.test(text) || text !== text.trim()) return `"${text.replace(/"/g, '""')}"`;
   return text;
 }
