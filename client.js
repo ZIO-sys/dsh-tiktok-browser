@@ -1214,15 +1214,18 @@ window.__ModuleLoader__.load({
       const aix = state?.download?.aix || null;
       const retryState = state?.retry || null;
 
-      // 采集进度：后端每跑完一个关键词就回报累计 found/target；运行中每分钟主动拉一次 /state。
+      // 采集进度：后端每处理完一条候选就回报实时 found/target，每跑完一个关键词再刷新一次；运行中每 3 秒主动拉一次 /state。
       const runProgress = runState?.progress || null;
       const progressFound = Math.max(0, Number(runProgress?.found) || 0);
       const progressTarget = Math.max(0, Number(runProgress?.target) || 0);
       const progressIndex = Math.max(0, Number(runProgress?.index) || 0);
       const progressTotal = Math.max(0, Number(runProgress?.total) || 0);
+      const progressCurrent = runProgress?.current || null;
+      const progressCurrentIndex = Math.max(0, Number(progressCurrent?.index) || 0);
+      const progressCurrentTotal = Math.max(0, Number(progressCurrent?.total) || 0);
       useEffect(() => {
         if (!runState?.running) return undefined;
-        const timer = setInterval(() => { void refresh(false); }, 60_000);
+        const timer = setInterval(() => { void refresh(false); }, 3_000);
         return () => clearInterval(timer);
       }, [runState?.running, api]);
       const configuredProviders = state?.model?.providers || [];
@@ -1526,7 +1529,7 @@ window.__ModuleLoader__.load({
             h('div', { style: { width: 150 } }, field('本次采集数量', draft.search.targetVideos, (value) => setDraft((old) => patchAt(old, ['search', 'targetVideos'], numberInputValue(value))), { type: 'number', min: 1, max: 200, placeholder: 'max：200' }))),
           runState.running || progressTarget > 0
             ? note(progressTarget > 0
-              ? `已成功采集 ${progressFound} / ${progressTarget} 个视频${progressTotal > 0 ? ` · 关键词 ${progressIndex}/${progressTotal}` : ''}${runState.running ? ' · 采集中' : ' · 上次采集'}`
+              ? `已成功采集 ${progressFound} / ${progressTarget} 个视频${progressTotal > 0 ? ` · 关键词 ${progressIndex}/${progressTotal}` : ''}${runState.running && progressCurrentTotal > 0 ? ` · 当前关键词已处理 ${progressCurrentIndex}/${progressCurrentTotal} 条` : ''}${runState.running ? ' · 采集中' : ' · 上次采集'}`
               : '采集任务已启动，正在扩展关键词，进度稍后出现…')
             : note('开始采集会先自动保存当前搜索设置，再按下方种子词与画像启动；只改设置时用下方的「保存」。'),
           section('搜索任务',
@@ -1553,7 +1556,7 @@ window.__ModuleLoader__.load({
               && note('目标视频语言为“自动”时只记录检测结果，不拦截下载与判定。选定具体语言后，文案语言明显不符的素材会标为“语言不符”，不下载、不判定，省流量与 token。'),
             profiles.length === 0 && note('当前没有可用画像。请先在“样例与画像”生成素材筛选画像，否则采集会被拒绝。'),
             h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 } },
-              field('本次任务 token 上限', draft.search.tokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'tokenBudget'], numberInputValue(value))), { type: 'number', min: 1 }),
+              field('本次任务 token 上限（0 = 不限）', draft.search.tokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'tokenBudget'], numberInputValue(value))), { type: 'number', min: 0 }),
               field('每日 token 上限（0 = 不限）', draft.search.dailyTokenBudget, (value) => setDraft((old) => patchAt(old, ['search', 'dailyTokenBudget'], numberInputValue(value))), { type: 'number', min: 0 })),
             dailyBudget && note(`今日 ${dailyBudget.dateKey || ''}：已用 ${dailyBudget.usedToday || 0}${dailyBudget.enabled ? ` / 上限 ${dailyBudget.dailyLimit || 0} / 剩余 ${dailyBudget.remaining || 0}` : ' · 每日上限未启用'}${dailyBudget.estimatedTokens ? `（其中估算 ${dailyBudget.estimatedTokens}）` : ''}`),
             dailyExhausted && h('p', { role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #c00)' } }, '今日 token 预算已用完：调大每日上限或等到明天，否则任务会被直接拒绝。'),
@@ -1561,11 +1564,11 @@ window.__ModuleLoader__.load({
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || runState.running, onClick: () => void previewKeywords() }, busy === 'preview' ? '扩展中…' : 'AI 扩展预览'),
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void saveSearch() }, busy === 'saveSearch' ? '保存中…' : '保存'),
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny || !runState.running, onClick: () => void perform('stopRun', () => api.request('/run/stop', {}), '已请求停止任务。') }, '停止')),
-            preview && h('div', { style: card }, note(preview.skipped ? 'AI 扩展数量为 0，未调用模型，仅使用种子词。' : `模型 ${preview.model || ''} · 新增 ${preview.count || 0} 个扩展词`), h('div', { style: row }, ...(preview.skipped ? (preview.seeds || []) : (preview.keywords || [])).map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))), preview.budget && note(`本次预算已用 ${preview.budget.used || 0} / ${preview.budget.limit || 0}`))),
+            preview && h('div', { style: card }, note(preview.skipped ? 'AI 扩展数量为 0，未调用模型，仅使用种子词。' : `模型 ${preview.model || ''} · 新增 ${preview.count || 0} 个扩展词`), h('div', { style: row }, ...(preview.skipped ? (preview.seeds || []) : (preview.keywords || [])).map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))), preview.budget && note(preview.budget.unlimited ? `本次预算已用 ${preview.budget.used || 0} / 不限` : `本次预算已用 ${preview.budget.used || 0} / ${preview.budget.limit || 0}`))),
           section('任务状态',
             note(`状态 ${runState.status || 'idle'} · 阶段 ${runState.phase || '-'}${runState.startedAt ? ` · 开始 ${new Date(runState.startedAt).toLocaleString('zh-CN', { hour12: false })}` : ''}`),
             runState.error && h('p', { role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #c00)' } }, `${runState.error.code || ''} ${runState.error.message || ''}`),
-            tokenState && note(`Token ${tokenState.used || 0} / ${tokenState.limit || 0} · 预留 ${tokenState.reserved || 0} · 剩余 ${tokenState.remaining || 0}${tokenState.estimated ? ` · 估算 ${tokenState.estimated}` : ''}`),
+            tokenState && note(`Token ${tokenState.used || 0} / ${tokenState.unlimited ? '不限' : (tokenState.limit || 0)} · 预留 ${tokenState.reserved || 0} · 剩余 ${tokenState.unlimited ? '不限' : (tokenState.remaining || 0)}${tokenState.estimated ? ` · 估算 ${tokenState.estimated}` : ''}`),
             (runState.keywords || []).length > 0 && h('div', { style: row }, ...runState.keywords.map((item) => h('span', { key: item, style: { ...muted, border: '1px solid var(--dsw-alias-border-l2, #ddd)', borderRadius: 14, padding: '4px 9px' } }, item))),
             runState.result?.result && note(`命中 ${runState.result.result.totals?.found || 0} · 新增 ${runState.result.result.totals?.extracted || 0} · 通过 ${runState.result.result.totals?.accepted || 0} · 拒绝 ${runState.result.result.totals?.rejected || 0} · 成功 ${runState.result.result.totals?.succeeded || 0}`))),
 
@@ -1575,7 +1578,7 @@ window.__ModuleLoader__.load({
             h('div', { style: row },
               h('button', { type: 'button', style: buttonStyle, disabled: busyAny, onClick: () => void pickArchiveDirectory() }, busy === 'pickDir' ? '等待选择…' : '选择文件夹'),
               h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveDownload() }, busy === 'saveDownload' ? '保存中…' : '保存归档目录')),
-            note('选择或输入绝对路径后保存；新目录会自动创建，后续视频和 sidecar 直接归档到这里。路径切换不影响已归档文件。')),
+            note('选择或输入绝对路径后保存；新目录会自动创建，后续视频直接归档到这里。路径切换不影响已归档文件。')),
           section('下载通道',
             toggle('优先无水印（playAddr，默认开）', draft.download.preferNoWatermark, (value) => setDraft((old) => patchAt(old, ['download', 'preferNoWatermark'], value))),
             draft.download.preferNoWatermark
@@ -1595,7 +1598,7 @@ window.__ModuleLoader__.load({
             note('URL 页面抓取会校验 MP4 文件头、最小体积和视频时长，时长与作品不一致时拒绝归档，避免保存推荐流的下一条视频。'),
             h('div', { style: row }, h('button', { type: 'button', style: primaryStyle, disabled: busyAny, onClick: () => void saveDownload() }, busy === 'saveDownload' ? '保存中…' : '保存下载设置'))),
           section('归档校验',
-            note('外部下载文件先进入 runtime staging，通过 MP4 文件头、最小体积和视频时长校验后才写入关键词/日期目录并生成同名 sidecar。')),
+            note('外部下载文件先进入 runtime staging，通过 MP4 文件头、最小体积和视频时长校验后才写入关键词/日期目录（只保留 mp4，不再生成同名 json）。')),
           section('AIX 可用性',
             ...(aix ? [note(`状态：${aix.ok ? '已检测' : '不可用'}`), aix.code && note(`错误码：${aix.code}`), aix.message && note(aix.message)] : [note('尚未读取 AIX 状态')]))),
 
@@ -1738,7 +1741,7 @@ window.__ModuleLoader__.load({
               note(`自检结果：${diagnostics.summary || (diagnostics.ok ? '全部通过' : '存在未通过项')}`),
               ...(diagnostics.checks || []).map((item) => note(`${item.ok ? '通过' : '未通过'} · ${item.label}：${item.detail || ''}${item.fix ? ` · 建议：${item.fix}` : ''}`)))),
           section('Token 用量',
-            tokenState && note(`当前任务 ${tokenState.used || 0} / ${tokenState.limit || 0}，估算 ${tokenState.estimated || 0}，剩余 ${tokenState.remaining || 0}`),
+            tokenState && note(`当前任务 ${tokenState.used || 0} / ${tokenState.unlimited ? '不限' : (tokenState.limit || 0)}，估算 ${tokenState.estimated || 0}，剩余 ${tokenState.unlimited ? '不限' : (tokenState.remaining || 0)}`),
             dailyBudget && note(`今日 ${dailyBudget.dateKey || ''}：已用 ${dailyBudget.usedToday || 0}${dailyBudget.enabled ? ` / 上限 ${dailyBudget.dailyLimit || 0} / 剩余 ${dailyBudget.remaining || 0}` : ' · 每日上限未启用'} · 已结算 ${dailyBudget.settledEvents || 0} 次${dailyBudget.estimatedTokens ? ` · 估算 ${dailyBudget.estimatedTokens}` : ''}`),
             dailyBudget && Object.entries(dailyBudget.byOperation || {}).sort((left, right) => right[1] - left[1]).map(([operation, tokens]) => note(`今日 ${operation}：${tokens} Token`)),
             ...(state?.tokenUsage || []).slice(-12).reverse().map((item, index) => note(`${item.timestamp ? new Date(item.timestamp).toLocaleString('zh-CN', { hour12: false }) : '-'} · ${item.operation || item.reservationId || '-'} · ${item.event || ''} · ${item.totalTokens ?? item.estimatedTokens ?? 0} Token${item.estimated ? '（估算）' : ''}`)),
