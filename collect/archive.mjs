@@ -1,11 +1,12 @@
-// archive.mjs — M3：下载作品媒体文件并按「关键词 / 日期」归档，同时写同名 sidecar JSON。
+// archive.mjs — M3：下载作品媒体文件并按「关键词 / 日期」归档，只保留 mp4。
+// 2026-11-26 起不再写同名 sidecar JSON（用户要求归档目录只有 .mp4）。
 //
 // 设计要点（见 tiktok-browser-design.md）：
 // - **默认优先 playAddr（无水印）**，失败再退 downloadAddr（带水印、但更稳）。
 //   2026-11-10 实机对比确认：同一作品 playAddr 与 downloadAddr 时长/分辨率/音轨完全一致，
 //   downloadAddr 画面上有 "♪ TikTok @作者" 浮层，playAddr 没有。
 // - playAddr / downloadAddr 都是**带签名、有时效**的 CDN 地址，必须拿到就下，不能缓存隔夜。
-// - 归档结构：downloads/<keyword-slug>/<YYYY-MM-DD>/<videoId>.mp4 + <videoId>.json
+// - 归档结构：downloads/<keyword-slug>/<YYYY-MM-DD>/<videoId>.mp4（不再生成 <videoId>.json）
 // - 重跑不重复下载：目标文件已存在且大小合理则跳过。
 
 import {
@@ -78,7 +79,7 @@ export function dateStamp(date = new Date()) {
 
 /**
  * 归档目录：按日期 <downloads>/<YYYY-MM-DD>/。
- * 2026-11-10 起不再按关键词分层（关键词仍写在 sidecar 的 query 与候选记录里）。
+ * 2026-11-10 起不再按关键词分层（关键词仍写在候选记录里，不再写 sidecar）。
  */
 export function archiveDir(downloadsDir, keyword, date = new Date()) {
   return join(downloadsDir, dateStamp(date));
@@ -496,35 +497,10 @@ async function fetchVideoToFileInner(page, url, destFile, tmp, { referer, timeou
   };
 }
 
-/** sidecar JSON 里保留的字段（避免把巨大的原始 JSON 全写进去）。 */
-function sidecarPayload(candidate, extra) {
-  return {
-    videoId: candidate.videoId || null,
-    url: candidate.url || null,
-    query: candidate.query || null,
-    desc: candidate.desc || null,
-    createTime: candidate.createTime ?? null,
-    duration: candidate.duration ?? null,
-    author: candidate.author || null,
-    stats: candidate.stats || null,
-    music: candidate.music || null,
-    challenges: candidate.challenges || [],
-    video: candidate.video
-      ? {
-          width: candidate.video.width ?? null,
-          height: candidate.video.height ?? null,
-          ratio: candidate.video.ratio ?? null,
-          cover: candidate.video.cover || null,
-          dynamicCover: candidate.video.dynamicCover || null,
-        }
-      : null,
-    archivedAt: new Date().toISOString(),
-    ...extra,
-  };
-}
+/** sidecar JSON 曾在此构造；2026-11-26 起归档不再写 sidecar，函数已移除。 */
 
 /**
- * 把外部下载器（如 AIX）得到的文件复制进现有归档结构，并写同名 sidecar。
+ * 把外部下载器（如 AIX）得到的文件复制进现有归档结构（只写 mp4，不再写 sidecar）。
  * 不移动用户默认下载目录中的文件；调用方只应清理自己创建的 staging 文件。
  */
 export function archiveExistingFile({
@@ -551,24 +527,12 @@ export function archiveExistingFile({
   const dir = archiveDir(downloadsDir, keyword);
   mkdirSync(dir, { recursive: true });
   const mp4File = join(dir, `${videoId}.mp4`);
-  const jsonFile = join(dir, `${videoId}.json`);
   const temp = `${mp4File}.${process.pid}.import`;
   try {
     copyFileSync(sourceFile, temp);
     const copiedBytes = statSync(temp).size;
     if (copiedBytes !== bytes) throw new Error(`复制校验失败（${bytes} != ${copiedBytes}）`);
     renameSync(temp, mp4File);
-    const payload = sidecarPayload(candidate, {
-      file: `${videoId}.mp4`,
-      bytes,
-      source,
-      channel: source,
-      watermark,
-      mediaDuration,
-      importedFrom: sourceFile,
-      contentType: 'video/mp4',
-    });
-    writeFileSync(jsonFile, JSON.stringify(payload, null, 2), 'utf8');
     logger?.info?.(`已导入外部下载 ${videoId} (${source}, ${bytes} 字节)`);
     return { ok: true, skipped: false, file: mp4File, bytes, source, watermark, mediaDuration, code: null, message: null };
   } catch (error) {
@@ -582,7 +546,7 @@ export function archiveExistingFile({
 }
 
 /**
- * 归档一条候选：下载 mp4 + 写同名 json。
+ * 归档一条候选：下载 mp4（2026-11-26 起不再写同名 json）。
  * @param {object} options
  * @param {import('playwright-core').Page} options.page
  * @param {object} options.candidate 归一化后的候选（含 video.downloadAddr / video.playAddr）
@@ -609,7 +573,6 @@ export async function archiveCandidate({ page, candidate, downloadsDir, keyword,
   const dir = archiveDir(downloadsDir, keyword);
   mkdirSync(dir, { recursive: true });
   const mp4File = join(dir, `${videoId}.mp4`);
-  const jsonFile = join(dir, `${videoId}.json`);
 
   const media = candidate?.video || {};
   const order = preferNoWatermark
@@ -628,15 +591,6 @@ export async function archiveCandidate({ page, candidate, downloadsDir, keyword,
     const result = await fetchVideoToFile(page, source.url, mp4File, { referer: candidate.url || undefined });
     if (result.ok) {
       const watermark = watermarkOfSource(source.key);
-      const payload = sidecarPayload(candidate, {
-        file: `${videoId}.mp4`,
-        bytes: result.bytes,
-        source: source.key,
-        contentType: result.contentType,
-        watermark,
-        preferNoWatermark,
-      });
-      writeFileSync(jsonFile, JSON.stringify(payload, null, 2), 'utf8');
       logger?.info?.(`已归档 ${videoId} (${source.key}, ${result.bytes} 字节, 水印=${watermark})`);
       return { ok: true, skipped: false, file: mp4File, bytes: result.bytes, source: source.key, watermark, code: null, message: null };
     }
@@ -655,15 +609,6 @@ export async function archiveCandidate({ page, candidate, downloadsDir, keyword,
         if (result.ok) {
           const source = `${key}(refreshed)`;
           const watermark = watermarkOfSource(source);
-          const payload = sidecarPayload({ ...candidate, ...fresh }, {
-            file: `${videoId}.mp4`,
-            bytes: result.bytes,
-            source,
-            contentType: result.contentType,
-            watermark,
-            preferNoWatermark,
-          });
-          writeFileSync(jsonFile, JSON.stringify(payload, null, 2), 'utf8');
           return { ok: true, skipped: false, file: mp4File, bytes: result.bytes, source, watermark, code: null, message: null };
         }
         last = result;
