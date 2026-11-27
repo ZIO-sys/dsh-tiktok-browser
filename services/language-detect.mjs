@@ -102,22 +102,44 @@ function detectLatin(text) {
   return { code: topCode, confidence: round3(confidence), mixed, scores };
 }
 
+/** 拉丁字母书写的语言。用于判断元数据 hint 与脚本证据冲突时该信谁。 */
+const LATIN_LANGUAGES = new Set(['en', 'es', 'pt', 'id', 'de', 'fr', 'vi']);
+
+/** 判定“这段文案确实是该脚本写的”所需的最少字符数与占比。 */
+const SCRIPT_MIN_CHARS = 6;
+const SCRIPT_MIN_SHARE = 0.5;
+const SCRIPT_MIN_COVERAGE = 0.08;
+
 function detectScript(text) {
   const letters = lettersOf(text);
-  if (!letters) return { code: 'unknown', confidence: 0, mixed: false, scripts: {} };
+  if (!letters) return { code: 'unknown', confidence: 0, mixed: false, scripts: {}, scriptLetters: 0 };
   const counts = {};
   for (const script of SCRIPTS) {
-    const pattern = script.kana || script.pattern;
-    let count = countMatches(text, pattern);
-    if (script.kana && script.han) count += countMatches(text, /\u4e00-\u9fff/g);
+    let count;
+    if (script.kana) {
+      const kana = countMatches(text, script.kana);
+      // 只有出现假名时才把汉字计入日语，否则纯中文会被误判成日语。
+      count = kana > 0 && script.han ? kana + countMatches(text, /\u4e00-\u9fff/g) : kana;
+    } else {
+      count = countMatches(text, script.pattern);
+    }
     if (count > 0) counts[script.code] = count;
   }
   const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-  if (!ranked.length) return { code: 'unknown', confidence: 0, mixed: false, scripts: counts };
+  if (!ranked.length) return { code: 'unknown', confidence: 0, mixed: false, scripts: counts, scriptLetters: 0 };
   const [code, count] = ranked[0];
-  const confidence = round3(Math.min(0.99, count / letters));
-  const mixed = ranked.length > 1 && ranked[1][1] / letters >= 0.2;
-  return { code, confidence, mixed, scripts: counts };
+  const scriptLetters = ranked.reduce((sum, [, n]) => sum + n, 0);
+  // share：在“识别到的非拉丁脚本字符”里占多少；coverage：在全文所有字母里占多少。
+  const share = count / Math.max(1, scriptLetters);
+  const coverage = count / letters;
+  // 置信度表示“这段文案确实是用该脚本写的”，而不是“该脚本占全文的比例”。
+  // 旧公式用 count/letters，韩文/日文文案里混入大量英文品牌词时会被判成“不自信”而放行。
+  const enough = count >= SCRIPT_MIN_CHARS && share >= SCRIPT_MIN_SHARE && coverage >= SCRIPT_MIN_COVERAGE;
+  const confidence = enough
+    ? round3(Math.min(0.99, 0.55 + 0.4 * share + 0.3 * Math.min(1, coverage * 2)))
+    : round3(Math.min(0.59, coverage));
+  const mixed = ranked.length > 1 && ranked[1][1] / Math.max(1, scriptLetters) >= 0.3;
+  return { code, confidence, mixed, scripts: counts, scriptLetters };
 }
 
 /**
@@ -131,15 +153,25 @@ export function detectLanguage(input, { langHint = '' } = {}) {
   const text = normalizeText(input);
   const sampleLength = lettersOf(text);
   const hint = String(langHint || '').toLowerCase().split(/[-_]/)[0];
-  if (hint && LANGUAGE_CODES.includes(hint) && hint !== 'auto') {
-    return { code: hint, confidence: 1, mixed: false, source: 'hint', sampleLength };
-  }
+  const hintValid = Boolean(hint) && LANGUAGE_CODES.includes(hint) && hint !== 'auto';
   if (sampleLength < 2) {
+    if (hintValid) return { code: hint, confidence: 0.5, mixed: false, source: 'hint', sampleLength };
     return { code: 'unknown', confidence: 0, mixed: false, source: 'none', sampleLength };
   }
 
   const vietnameseMarks = countMatches(text, VIETNAMESE_MARKS);
   const script = detectScript(text);
+  if (hintValid) {
+    // 元数据声明的语言（TikTok 的 language 字段）经常跟着账号/创作者设置走，
+    // 韩文文案被标成 en 时会以 confidence 1 直接绕过语言过滤。脚本证据足够强时以脚本为准。
+    const hintIsLatin = LATIN_LANGUAGES.has(hint);
+    const scriptStrong = script.code !== 'unknown'
+      && Number(script.confidence) >= LANGUAGE_CONFIDENCE_THRESHOLD;
+    if (hintIsLatin && scriptStrong && !LATIN_LANGUAGES.has(script.code)) {
+      return { ...script, source: 'script', sampleLength };
+    }
+    return { code: hint, confidence: 1, mixed: false, source: 'hint', sampleLength };
+  }
   if (script.code !== 'unknown' && script.code !== 'zh') {
     return { ...script, source: 'script', sampleLength };
   }
