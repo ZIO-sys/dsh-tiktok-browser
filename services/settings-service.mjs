@@ -21,7 +21,8 @@ const FIELDS = Object.freeze({
   // 被拒素材落点：配置后判定为 reject 的 mp4+json 平铺到 <dir>/<YYYY-MM-DD>/；留空则直接删。
   'storage.rejectedDir': { kind: 'directory', allowEmpty: true },
   'search.maxResultsPerKeyword': { kind: 'integer', min: 1, max: 200, allowEmpty: true },
-  'search.tokenBudget': { kind: 'integer', min: 1, max: 1_000_000_000, allowEmpty: true },
+  // 本次任务 token 上限：0 = 不限（留空则沿用默认值）；每日上限同样 0 = 不限。
+  'search.tokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000, allowEmpty: true },
   'search.dailyTokenBudget': { kind: 'integer', min: 0, max: 1_000_000_000, allowEmpty: true },
   // 0 = 不扩展关键词（只用种子词，不调用模型）。
   'search.targetCount': { kind: 'integer', min: 0, max: 30, allowEmpty: true },
